@@ -36,6 +36,31 @@ import sqlite3, os, json, threading, webbrowser, re, random, time, queue, zipfil
 from datetime import datetime, timedelta
 import http.server, socketserver, socket, urllib.parse
 import io
+from seo_upgrade import (
+    BLOCKED_LOCATION_TERMS,
+    KEYWORD_BUCKETS,
+    apply_noindex_if_needed,
+    auto_select_output_mode,
+    calculate_school_specificity_score,
+    compare_with_other_client_pages,
+    compare_with_tachy_pages,
+    generate_board_city_page,
+    generate_client_page,
+    generate_comparison_page,
+    generate_gbp_posts,
+    generate_hindi_city_page,
+    generate_locality_page,
+    generate_module_city_page,
+    generate_voice_faq_page,
+    generate_wa_broadcasts,
+    parse_youtube_input,
+    proof_mode_context,
+    run_publish_safety_validator,
+    run_quality_gate,
+    sanitize_slug,
+    validate_client_anchor,
+    validate_location_row,
+)
 
 # ══════════════════════════════════════════════════════════════════════
 #  PATHS & CONFIG
@@ -287,6 +312,57 @@ BLOG_TEMPLATES = {
     },
 }
 
+BOARD_INTROS = [
+    "Schools in {city} following {board} workflows need board-aligned ERP structures and report formats.",
+    "{board} schools in {city}, {state} can standardize grading and administration with digital workflows.",
+    "For {board} institutions in {city}, compliance and report generation become easier with structured ERP usage.",
+    "Administrators in {city} running {board} schools need reliable data flow from attendance to report cards.",
+    "{board} schools across {state} and {city} benefit from unified fee, exam, and academic records.",
+    "From admissions to final results, {board} schools in {city} require consistent and auditable processes.",
+    "Digitization priorities for {board} schools in {city} include report cards, fees, and parent communication.",
+    "{city} schools under {board} standards can reduce manual administration through centralized ERP operations.",
+]
+LOCALITY_INTROS = [
+    "Schools in {city}'s {board} locality clusters need localized onboarding and support context.",
+    "Local administrators in {city} often look for neighborhood-relevant ERP implementation guidance.",
+    "{city} locality pages help schools evaluate service area readiness before platform rollout.",
+    "For schools around {city}, local context and support language improves implementation confidence.",
+    "Neighborhood-level school operations in {city} require practical digital workflows, not generic pages.",
+    "{city} locality-focused ERP guidance supports parents, teachers, and office staff during adoption.",
+    "Localized ERP pages for {city} align digital operations with community expectations and school size.",
+    "Sub-city ERP guidance in {city} helps schools compare modules and onboarding pathways.",
+]
+MODULE_CITY_INTROS = [
+    "{board} schools in {city} need module-focused workflows that match daily administrative routines.",
+    "Module + city pages for {city} help schools evaluate a single operational area in depth.",
+    "From {city} fee desks to attendance operations, focused module pages improve buying clarity.",
+    "Schools in {city} comparing module-specific ERP options need practical examples and process fit.",
+    "A module-first page for {city} clarifies implementation scope before full ERP rollout.",
+    "{city} school teams can benchmark module readiness and internal responsibilities clearly.",
+    "Module + locality + board context improves ERP decision quality for {city} administrators.",
+    "Schools in {city} use module pages to compare rollout complexity and support expectations.",
+]
+HINDI_HERO_INTROS = [
+    "{city}, {state} के स्कूलों के लिए डिजिटल प्रबंधन को सरल बनाने वाला स्कूल ERP समाधान।",
+    "{board} और अन्य बोर्ड वाले स्कूलों के लिए {city} में भरोसेमंद ERP मार्गदर्शन।",
+    "{city} के प्रिंसिपल और प्रशासनिक टीम के लिए फीस, उपस्थिति और रिपोर्ट कार्ड का एक प्लेटफॉर्म।",
+    "{state} के स्कूलों के लिए आसान, स्पष्ट और चरणबद्ध ERP अपनाने की जानकारी।",
+    "{city} स्कूलों में डिजिटल संचालन के लिए व्यावहारिक और सुरक्षित ERP ढांचा।",
+    "{board} अनुकूल वर्कफ़्लो के साथ {city} के स्कूलों के लिए प्रशासनिक दक्षता का समर्थन।",
+    "{city} के अभिभावक संचार, फीस प्रबंधन और परीक्षा प्रक्रियाओं के लिए डिजिटल सहायता।",
+    "{state} और {city} के K-12 स्कूलों के लिए आधुनिक स्कूल ERP परिचालन ढांचा।",
+]
+COMPARISON_INTROS = [
+    "A neutral comparison helps {city} schools evaluate fit, support, and implementation quality.",
+    "School leaders in {state} should compare ERP options on workflows, not marketing hype.",
+    "{city} administrators can use structured criteria to compare ERP tools fairly.",
+    "A balanced ERP comparison covers onboarding, support, reporting, and school-size fit.",
+    "For schools in {city}, practical implementation factors matter more than broad feature lists.",
+    "A comparison page should show where each platform fits different school contexts.",
+    "Neutral competitor comparisons reduce risk before switching from manual workflows.",
+    "School ERP comparisons should focus on transparency, clarity, and support readiness.",
+]
+
 MODULE_PAGES = [
     ("school-fee-management-software","School Fee Management Software India","Online Fee Collection & Billing",
      "school fee management software, online fee collection India, school billing software, fee receipt system, school fee app India"),
@@ -412,6 +488,185 @@ def init_db():
         url TEXT,
         checked_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
+    CREATE TABLE IF NOT EXISTS page_qc (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        slug TEXT NOT NULL,
+        page_type TEXT DEFAULT 'city',
+        content_hash TEXT DEFAULT '',
+        similarity_score REAL DEFAULT 0,
+        thin_content INTEGER DEFAULT 0,
+        quality_score INTEGER DEFAULT 0,
+        publish_status TEXT DEFAULT 'manual_review',
+        schema_status TEXT DEFAULT 'invalid',
+        image_status TEXT DEFAULT 'fallback_used',
+        proof_status TEXT DEFAULT 'neutral',
+        claim_status TEXT DEFAULT 'unsupported_stat',
+        video_status TEXT DEFAULT 'not_present',
+        business_entity_status TEXT DEFAULT 'safe',
+        testimonial_status TEXT DEFAULT 'fallback',
+        outdated_meta_status TEXT DEFAULT 'clean',
+        publish_safety_status TEXT DEFAULT 'manual_review',
+        reason_codes TEXT DEFAULT '[]',
+        visible_text TEXT DEFAULT '',
+        review_state TEXT DEFAULT 'manual_review',
+        keyword_bucket_map TEXT DEFAULT '{}',
+        language_variant TEXT DEFAULT 'en-IN',
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS import_reviews (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        city_name TEXT,
+        state_name TEXT,
+        country TEXT,
+        slug TEXT,
+        review_state TEXT DEFAULT 'manual_review',
+        reason_codes TEXT DEFAULT '[]',
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS proof_sources (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        city TEXT,
+        state TEXT,
+        platform_name TEXT NOT NULL,
+        rating REAL,
+        review_count INTEGER,
+        source_url TEXT,
+        verification_date TEXT,
+        is_verified INTEGER DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS testimonials (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        city TEXT,
+        state TEXT,
+        person_name TEXT NOT NULL,
+        role TEXT,
+        school_name TEXT,
+        quote TEXT NOT NULL,
+        source_url TEXT,
+        verification_date TEXT,
+        is_verified INTEGER DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS publish_safety_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        slug TEXT NOT NULL,
+        publish_safety_status TEXT DEFAULT 'manual_review',
+        issue_codes TEXT DEFAULT '[]',
+        claim_status TEXT DEFAULT 'unsupported_stat',
+        video_status TEXT DEFAULT 'not_present',
+        business_entity_status TEXT DEFAULT 'safe',
+        testimonial_status TEXT DEFAULT 'fallback',
+        outdated_meta_status TEXT DEFAULT 'clean',
+        schema_status TEXT DEFAULT 'invalid',
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS client_schools (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        school_name TEXT NOT NULL,
+        school_domain TEXT NOT NULL,
+        city TEXT, state TEXT, board TEXT,
+        school_type TEXT,
+        num_branches INTEGER DEFAULT 1,
+        modules_used TEXT DEFAULT '[]',
+        go_live_date TEXT,
+        parent_app_available INTEGER DEFAULT 0,
+        fee_payment_available INTEGER DEFAULT 0,
+        report_card_available INTEGER DEFAULT 0,
+        attendance_available INTEGER DEFAULT 0,
+        support_email TEXT,
+        support_phone TEXT,
+        school_logo_path TEXT,
+        implementation_notes TEXT,
+        approved_testimonial TEXT,
+        approved_testimonial_person TEXT,
+        indexing_allowed INTEGER DEFAULT 1,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS client_pages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        client_school_id INTEGER,
+        page_type TEXT,
+        slug TEXT,
+        file_path TEXT,
+        visible_text TEXT,
+        word_count INTEGER DEFAULT 0,
+        school_specificity_score INTEGER DEFAULT 0,
+        cross_domain_similarity_score REAL DEFAULT 0,
+        tachy_similarity_score REAL DEFAULT 0,
+        indexing_mode TEXT DEFAULT 'noindex',
+        canonical_target TEXT DEFAULT '',
+        backlink_mode TEXT DEFAULT 'nofollow',
+        link_count_to_tachy INTEGER DEFAULT 0,
+        anchor_text_profile TEXT DEFAULT '{}',
+        proof_status TEXT DEFAULT 'neutral',
+        publish_status TEXT DEFAULT 'manual_review',
+        publish_safety_status TEXT DEFAULT 'manual_review',
+        reason_codes TEXT DEFAULT '[]',
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        generated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(client_school_id) REFERENCES client_schools(id)
+    );
+    CREATE TABLE IF NOT EXISTS client_similarity_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        client_slug TEXT,
+        compared_to_slug TEXT,
+        compared_to_domain TEXT,
+        similarity_score REAL,
+        action_taken TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS canonical_decisions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        slug TEXT,
+        client_domain TEXT,
+        decision_type TEXT,
+        reason TEXT,
+        similarity_score REAL,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS client_safety_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        client_slug TEXT,
+        issue_codes TEXT DEFAULT '[]',
+        school_specificity_score INTEGER DEFAULT 0,
+        publish_status TEXT DEFAULT 'manual_review',
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS board_pages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        board TEXT, city TEXT, state TEXT,
+        slug TEXT UNIQUE, file_path TEXT,
+        word_count INTEGER DEFAULT 0,
+        seo_score INTEGER DEFAULT 0,
+        generated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS locality_pages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        locality TEXT, city TEXT, state TEXT,
+        slug TEXT UNIQUE, file_path TEXT,
+        word_count INTEGER DEFAULT 0,
+        seo_score INTEGER DEFAULT 0,
+        generated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS module_city_pages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        module TEXT, city TEXT, state TEXT,
+        slug TEXT UNIQUE, file_path TEXT,
+        word_count INTEGER DEFAULT 0,
+        seo_score INTEGER DEFAULT 0,
+        generated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS gbp_posts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        city TEXT, state TEXT, post_type TEXT,
+        post_content TEXT, utm_url TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS wa_broadcasts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        city TEXT, state TEXT, target_role TEXT,
+        message_text TEXT, char_count INTEGER,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
     """)
 
     defaults = {
@@ -433,6 +688,20 @@ def init_db():
         "softwaresuggest_url":"",
         "g2_url":"",
         "capterra_url":"",
+        "min_word_count":"1100",
+        "similarity_threshold":"0.78",
+        "quality_gate_threshold":"75",
+        "proof_freshness_days":"180",
+        "enable_hindi_pages":"0",
+        "publish_manifest":"publish_manifest.json",
+        "has_physical_office_in_city":"0",
+        "use_service_area_business_mode":"1",
+        "primary_business_city":"Katihar",
+        "enable_legacy_meta_tags":"0",
+        "youtube_upload_date":"",
+        "youtube_duration":"PT2M30S",
+        "powered_by_badge_sitewide":"0",
+        "powered_by_badge_rel":"nofollow",
     }
     for k, v in defaults.items():
         c.execute("INSERT OR IGNORE INTO settings VALUES(?,?)", (k, v))
@@ -442,6 +711,41 @@ def init_db():
     if "first_generated_at" not in gp_cols:
         c.execute("ALTER TABLE generated_pages ADD COLUMN first_generated_at TEXT")
         c.execute("UPDATE generated_pages SET first_generated_at = COALESCE(first_generated_at, generated_at)")
+    for add_col, add_type in [
+        ("quality_score", "INTEGER DEFAULT 0"),
+        ("publish_status", "TEXT DEFAULT 'manual_review'"),
+        ("schema_status", "TEXT DEFAULT 'invalid'"),
+        ("similarity_score", "REAL DEFAULT 0"),
+        ("proof_status", "TEXT DEFAULT 'neutral'"),
+        ("image_status", "TEXT DEFAULT 'fallback_used'"),
+        ("review_state", "TEXT DEFAULT 'manual_review'"),
+        ("language_variant", "TEXT DEFAULT 'en-IN'"),
+        ("keyword_bucket_map", "TEXT DEFAULT '{}'"),
+        ("claim_status", "TEXT DEFAULT 'unsupported_stat'"),
+        ("video_status", "TEXT DEFAULT 'not_present'"),
+        ("business_entity_status", "TEXT DEFAULT 'safe'"),
+        ("testimonial_status", "TEXT DEFAULT 'fallback'"),
+        ("outdated_meta_status", "TEXT DEFAULT 'clean'"),
+        ("publish_safety_status", "TEXT DEFAULT 'manual_review'")
+    ]:
+        if add_col not in gp_cols:
+            c.execute(f"ALTER TABLE generated_pages ADD COLUMN {add_col} {add_type}")
+    city_cols = [r[1] for r in c.execute("PRAGMA table_info(cities)").fetchall()]
+    if "review_state" not in city_cols:
+        c.execute("ALTER TABLE cities ADD COLUMN review_state TEXT DEFAULT 'publish_ready'")
+    if "validation_notes" not in city_cols:
+        c.execute("ALTER TABLE cities ADD COLUMN validation_notes TEXT DEFAULT '[]'")
+    pq_cols = [r[1] for r in c.execute("PRAGMA table_info(page_qc)").fetchall()]
+    for add_col, add_type in [
+        ("claim_status", "TEXT DEFAULT 'unsupported_stat'"),
+        ("video_status", "TEXT DEFAULT 'not_present'"),
+        ("business_entity_status", "TEXT DEFAULT 'safe'"),
+        ("testimonial_status", "TEXT DEFAULT 'fallback'"),
+        ("outdated_meta_status", "TEXT DEFAULT 'clean'"),
+        ("publish_safety_status", "TEXT DEFAULT 'manual_review'"),
+    ]:
+        if add_col not in pq_cols:
+            c.execute(f"ALTER TABLE page_qc ADD COLUMN {add_col} {add_type}")
 
 
     # 200+ Indian cities
@@ -705,7 +1009,8 @@ def _vary(pool, city, state, cf=None):
     return result
 
 def _city_facts(city):
-    return CITY_FACTS.get(city, CITY_FACTS["DEFAULT"])
+    # Safety-first: avoid presenting unverified numeric city claims in landing pages.
+    return {"pop":"growing", "schools":"many", "boards":"CBSE, ICSE, State Board", "note":"regional education center"}
 
 def _state_data(state):
     return STATE_DATA.get(state, STATE_DATA["DEFAULT"])
@@ -767,6 +1072,28 @@ def _seo_score_v3(html, city, state):
         if ok: score += pts
     return min(score, 100)
 
+
+def _seo_score_v4(html, city, state, page_type="city", school_specificity_score=None):
+    base = _seo_score_v3(html, city, state)
+    lhtml = html.lower()
+    plus = 0
+    checks = [
+        ("hindi_hreflang", 'hreflang="hi"' in lhtml or "lang=\"hi" in lhtml),
+        ("board_in_headings", ("cbse" in lhtml or "icse" in lhtml or "board" in lhtml) and ("<h1" in lhtml or "<h2" in lhtml)),
+        ("module_in_title_h1", any(x in lhtml for x in ["fee", "attendance", "transport", "payroll"]) and "<title>" in lhtml and "<h1" in lhtml),
+        ("voice_faq", "what is" in lhtml and "faq" in lhtml),
+        ("roi_calculator", "roi" in lhtml and "calculate" in lhtml),
+        ("gbp_utm", "utm_source=gbp" in lhtml),
+        ("client_canonical", "canonical" in lhtml),
+        ("specificity_gt_60", school_specificity_score is not None and school_specificity_score > 60),
+        ("powered_by_rel", "powered by tachy school erp" in lhtml and ("rel=\"nofollow\"" in lhtml or "rel=\"sponsored\"" in lhtml or "rel=\"follow\"" in lhtml)),
+        ("comparison_table", page_type == "comparison" and "<table" in lhtml),
+    ]
+    for _name, ok in checks:
+        if ok:
+            plus += 2
+    return min(120, base + plus)
+
 def _related_cities_html(city, state, s):
     related = []
     try:
@@ -801,7 +1128,7 @@ def generate_city_html(city, state, country="India", is_international=False, var
         "Delhi":"दिल्ली","Uttarakhand":"उत्तराखंड"
     }
     yr  = datetime.now().year
-    slug = city.lower().replace(" ","-") + ("-indian-school-erp" if is_international else "-school-erp")
+    slug = sanitize_slug(city) + ("-indian-school-erp" if is_international else "-school-erp")
     canonical = _page_url(slug, s)
     website = s.get('website','https://tachy.in')
     phone = s.get('phone','+91 8434801033')
@@ -812,9 +1139,14 @@ def generate_city_html(city, state, country="India", is_international=False, var
     short = s.get('short','TACHY')
     ga = s.get('ga','')
     og_image = s.get('og_image', '/assets/og-tachy-school-erp.jpg')
-    video_id = s.get('demo_video_id', '').strip()
-    rating_val = s.get('rating_value', '4.8')
-    review_cnt = int(s.get('review_count', '0') or '0')
+    video_info = parse_youtube_input(s.get('demo_video_id', '').strip())
+    video_id = video_info.video_id if video_info else ""
+    proof_ctx = proof_mode_context(DB_PATH, city, state, freshness_days=int(s.get("proof_freshness_days", "180") or "180"))
+    rating_val = None
+    review_cnt = 0
+    if proof_ctx.get("mode") == "verified" and proof_ctx.get("aggregate_rating"):
+        rating_val = str(proof_ctx["aggregate_rating"].get("rating", ""))
+        review_cnt = int(proof_ctx["aggregate_rating"].get("review_count", 0) or 0)
 
     # Unique per-city content
     hero_intro    = _vary(HERO_INTROS, city, state, cf)
@@ -822,7 +1154,13 @@ def generate_city_html(city, state, country="India", is_international=False, var
     opening_para  = _vary(OPENING_PARAS, city, state, cf)
     city_para     = _vary(CITY_SPECIFIC_PARAS, city, state, cf)
     closing_para  = _vary(CLOSING_PARAS, city, state, cf)
-    testi_picks   = random.sample(TESTIMONIALS_POOL, min(3, len(TESTIMONIALS_POOL)))
+    if proof_ctx.get("mode") == "verified" and proof_ctx.get("testimonials"):
+        testi_picks = [
+            (t[0], t[1] or "School Leader", t[2] or "Verified School", t[3])
+            for t in proof_ctx.get("testimonials", [])
+        ]
+    else:
+        testi_picks = []
     faq_picks     = random.sample(FAQS_POOL, 6)
     answer_block = (random.choice(ANSWER_BLOCKS).replace("{{city}}", city).replace("{{state}}", state).replace("{{board}}", board_short))
 
@@ -868,6 +1206,12 @@ def generate_city_html(city, state, country="India", is_international=False, var
     def faq_html(q, a):
         q2 = q.replace("{city}",city).replace("{state}",state)
         a2 = a.replace("{city}",city).replace("{state}",state)
+        if proof_ctx.get("mode") != "verified":
+            a2 = re.sub(r"\b\d+[–-]?\d*\s*(days?|hours?|%|\+)\b", "typically, depending on setup", a2, flags=re.I)
+            a2 = a2.replace("save", "improve")
+            a2 = a2.replace("Go live in 3-7 days", "Go live based on school readiness")
+            if "Contact us" not in a2:
+                a2 += " Timelines and outcomes vary by school size and selected modules."
         return (f'<div class="faq-item" itemscope itemprop="mainEntity" itemtype="https://schema.org/Question">'
                 f'<button class="faq-q" onclick="tFaq(this)" itemprop="name">{q2}<span class="farrow">▼</span></button>'
                 f'<div class="faq-a" itemscope itemprop="acceptedAnswer" itemtype="https://schema.org/Answer">'
@@ -893,13 +1237,16 @@ def generate_city_html(city, state, country="India", is_international=False, var
     # ── Testimonials ──────────────────────────────────────────
     def testi_card(name, role, school, quote):
         return (f'<div class="tcard" itemscope itemtype="https://schema.org/Review">'
-                f'<div class="tstars" itemprop="reviewRating" itemscope itemtype="https://schema.org/Rating">'
-                f'<meta itemprop="ratingValue" content="5"/>★★★★★</div>'
                 f'<p class="tquote" itemprop="reviewBody">"{quote}"</p>'
                 f'<div class="tauthor" itemprop="author" itemscope itemtype="https://schema.org/Person">'
                 f'<b itemprop="name">{name}</b><span>{role}, {school}</span></div></div>')
 
     testis_html_str = "\n".join(testi_card(nm,rl,sc,qt) for nm,rl,sc,qt in testi_picks)
+    testimonials_block = testis_html_str or (
+        '<div class="tcard"><p class="tquote">Implementation, onboarding, and support quality are discussed '
+        'transparently during your personalized demo and proposal.</p>'
+        '<div class="tauthor"><b>TACHY Implementation Team</b><span>Verified process guidance</span></div></div>'
+    )
 
     # ── Related cities ─────────────────────────────────────────
     related_html = _related_cities_html(city, state, s)
@@ -912,7 +1259,7 @@ def generate_city_html(city, state, country="India", is_international=False, var
         "operatingSystem": "Web Browser, Android",
         "offers": {"@type": "Offer", "priceCurrency": "INR", "availability": "https://schema.org/InStock"},
     }
-    if review_cnt > 0:
+    if review_cnt > 0 and rating_val:
         software_entry["aggregateRating"] = {
             "@type": "AggregateRating",
             "ratingValue": rating_val,
@@ -943,10 +1290,8 @@ def generate_city_html(city, state, country="India", is_international=False, var
             ]
         },
         {
-            "@type":"LocalBusiness","@id":website+"/#org",
+            "@type":"Organization","@id":website+"/#org",
             "name":brand,"url":website,"telephone":phone,"email":email,
-            "address":{"@type":"PostalAddress","addressLocality":"Katihar","addressRegion":"Bihar",
-                        "postalCode":"854105","addressCountry":"IN"},
             "areaServed":[city,state,"India"],
             "sameAs":[website],
             "description":f"School ERP Software for schools in {city}, {state}."
@@ -972,17 +1317,28 @@ def generate_city_html(city, state, country="India", is_international=False, var
             ]
         }
     ]
+    if (
+        s.get("has_physical_office_in_city", "0") == "1"
+        or (s.get("primary_business_city", "").strip().lower() == city.strip().lower())
+    ):
+        schema_graph.append({
+            "@type":"LocalBusiness","@id":website+"/#local",
+            "name":brand,"url":website,"telephone":phone,"email":email,
+            "address":{"@type":"PostalAddress","addressLocality":city,"addressRegion":state,"addressCountry":"IN"},
+            "areaServed":[city,state,"India"],
+            "description":f"Local support context for {city}, {state}."
+        })
 
-    if video_id:
+    if video_info:
         schema_graph.append({
             "@type":"VideoObject",
             "name": f"TACHY School ERP Demo for {city}",
             "description": f"See how TACHY School ERP works for schools in {city}, {state}. Full demo of admissions, fees, attendance and exam modules.",
-            "thumbnailUrl": f"{website}/assets/video-thumb.jpg",
-            "uploadDate": "2025-01-15T08:00:00+05:30",
-            "contentUrl": f"https://www.youtube.com/watch?v={video_id}",
-            "embedUrl": f"https://www.youtube.com/embed/{video_id}",
-            "duration": "PT8M30S"
+            "thumbnailUrl": video_info.thumbnail_url,
+            "uploadDate": s.get("youtube_upload_date", "2025-01-15"),
+            "contentUrl": video_info.watch_url,
+            "embedUrl": video_info.embed_url,
+            "duration": s.get("youtube_duration", "PT8M30S")
         })
 
     schema = json.dumps({
@@ -1376,9 +1732,9 @@ footer{{border-top:1px solid var(--border);padding:24px 0;color:var(--muted);fon
   <h2>The Smart Choice for <span class="grad">{city} Schools</span></h2>
   <p class="sub">Here's why school owners and principals in {city} consistently choose TACHY over every other school ERP option:</p>
   <div class="why-grid">
-   <div class="why-card"><div class="wnum">1</div><div><h4>Designed for Non-Technical Staff</h4><p>Any teacher, admin, or accountant in {city} can be trained in under 4 hours. No IT expertise required — guaranteed.</p></div></div>
+   <div class="why-card"><div class="wnum">1</div><div><h4>Designed for Non-Technical Staff</h4><p>Teacher, admin, and accountant workflows are designed for quick onboarding with guided support.</p></div></div>
    <div class="why-card"><div class="wnum">2</div><div><h4>Affordable for {city} Schools</h4><p>Flexible monthly/annual plans fitting budgets from 200-student primary schools to 2,000-student institutions in {city}.</p></div></div>
-   <div class="why-card"><div class="wnum">3</div><div><h4>Go Live in 3–7 Days</h4><p>Our team handles all data migration, configuration, and staff training. Most {city} schools are live within one week.</p></div></div>
+   <div class="why-card"><div class="wnum">3</div><div><h4>Structured Go-Live Plan</h4><p>Our team supports migration, configuration, and training with timelines based on each school's readiness.</p></div></div>
    <div class="why-card"><div class="wnum">4</div><div><h4>Dedicated WhatsApp Support</h4><p>We understand {state} schools. Our support team is available 6 days/week — just WhatsApp us anytime.</p></div></div>
    <div class="why-card"><div class="wnum">5</div><div><h4>All Indian Boards Configured</h4><p>CBSE, ICSE, IGCSE, and {sd['board']} — all grading formats, report cards, and term structures ready to use.</p></div></div>
    <div class="why-card"><div class="wnum">6</div><div><h4>Cloud-Based, No Server Needed</h4><p>Access your {city} school's data from any device, anywhere. Automatic cloud backup keeps data always safe.</p></div></div>
@@ -1392,7 +1748,7 @@ footer{{border-top:1px solid var(--border);padding:24px 0;color:var(--muted);fon
   <div class="badge">School Leaders Trust TACHY</div>
   <h2>What Schools Say About <span class="grad">TACHY ERP</span></h2>
   <p class="sub">Principals, administrators and school owners across {state} share their TACHY experience.</p>
-  <div class="tgrid">{testis_html_str}</div>
+  <div class="tgrid">{testimonials_block}</div>
  </div>
 </section>
 
@@ -1506,20 +1862,78 @@ document.querySelectorAll('.btn-p').forEach(function(b){{
 </script>
 </body>
 </html>"""
+    if s.get("enable_legacy_meta_tags", "0") != "1":
+        html = re.sub(r'<meta[^>]+name="keywords"[^>]*>\n?', "", html, flags=re.I)
+        html = re.sub(r'<meta[^>]+name="revisit-after"[^>]*>\n?', "", html, flags=re.I)
+        html = re.sub(r'<meta[^>]+name="rating"[^>]*>\n?', "", html, flags=re.I)
     return html
 
 def generate_city_page(city, state, output_dir, country="India", is_international=False, variation_seed=0, first_pub_date="2025-01-01"):
     os.makedirs(output_dir, exist_ok=True)
-    slug = city.lower().replace(" ","-") + ("-indian-school-erp" if is_international else "-school-erp")
+    slug = f"{sanitize_slug(city)}" + ("-indian-school-erp" if is_international else "-school-erp")
     html = generate_city_html(city, state, country, is_international, variation_seed, first_pub_date=first_pub_date)
+    row_validation = validate_location_row(city, state, country)
+    qc = run_quality_gate(
+        DB_PATH,
+        html_doc=html,
+        slug=slug,
+        page_type="city_commercial",
+        location_valid=row_validation["review_state"] != "blocked_invalid",
+        review_state=row_validation["review_state"],
+    )
+    proof_ctx = proof_mode_context(DB_PATH, city, state, freshness_days=int(cfg("proof_freshness_days") or "180"))
+    safety = run_publish_safety_validator(
+        html_doc=html,
+        city=city,
+        config=_s(),
+        proof_mode=proof_ctx.get("mode", "neutral"),
+        testimonials=proof_ctx.get("testimonials", []),
+    )
+    html = safety.rewritten_html
+    if safety.publish_safety_status != "safe" and qc.publish_status == "publish_ready":
+        qc.publish_status = "manual_review"
+    if qc.publish_status != "publish_ready":
+        html = apply_noindex_if_needed(html, qc.publish_status)
     path = os.path.join(output_dir, slug + ".html")
     with open(path, "w", encoding="utf-8") as f:
         f.write(html)
     wc    = len(re.findall(r'\w+', re.sub(r'<[^>]+>', '', html)))
-    score = _seo_score_v3(html, city, state)
+    score = min(120, int((_seo_score_v4(html, city, state) + qc.quality_score) / 2))
     meta  = (f"Best school ERP software in {city}, {state}. TACHY automates admissions, fees, "
              f"attendance, exams & transport. Free demo: {cfg('phone')}.")
-    return path, wc, score, meta, first_pub_date
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        """
+        INSERT INTO page_qc(
+            slug,page_type,content_hash,similarity_score,thin_content,quality_score,publish_status,
+            schema_status,image_status,proof_status,reason_codes,visible_text,review_state,keyword_bucket_map,language_variant,
+            claim_status,video_status,business_entity_status,testimonial_status,outdated_meta_status,publish_safety_status
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            slug, "city", qc.content_hash, qc.similarity_score, qc.thin_content, qc.quality_score, qc.publish_status,
+            qc.schema_status, qc.image_status, "verified" if "aggregaterating" in html.lower() else "neutral",
+            json.dumps(qc.reason_codes), re.sub(r"<[^>]+>", " ", html)[:12000], row_validation["review_state"],
+            json.dumps(KEYWORD_BUCKETS), "en-IN",
+            safety.claim_status, safety.video_status, safety.business_entity_status, safety.testimonial_status,
+            safety.outdated_meta_status, safety.publish_safety_status,
+        ),
+    )
+    conn.execute(
+        """
+        INSERT INTO publish_safety_log(
+            slug,publish_safety_status,issue_codes,claim_status,video_status,business_entity_status,testimonial_status,outdated_meta_status,schema_status
+        ) VALUES(?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            slug, safety.publish_safety_status, json.dumps(safety.issue_codes), safety.claim_status,
+            safety.video_status, safety.business_entity_status, safety.testimonial_status,
+            safety.outdated_meta_status, safety.schema_status,
+        ),
+    )
+    conn.commit()
+    conn.close()
+    return path, wc, score, meta, first_pub_date, qc, safety
 
 def generate_state_hub_html(state, cities_data):
     s = _s()
@@ -1874,8 +2288,16 @@ class App(tk.Tk):
         self._tab_cities()
         self._tab_bulk()
         self._tab_advanced()
+        self._tab_client_domains()
+        self._tab_board_pages()
+        self._tab_locality_pages()
+        self._tab_module_city_pages()
+        self._tab_gbp_posts()
+        self._tab_whatsapp_outreach()
+        self._tab_hindi_pages()
         self._tab_backlinks()
         self._tab_keywords()
+        self._tab_publish_safety()
         self._tab_settings()
         self._tab_log()
 
@@ -2178,14 +2600,25 @@ class App(tk.Tk):
         """Insert parsed city rows into DB. Returns (added, skipped)."""
         added = skipped = 0
         conn = sqlite3.connect(DB_PATH)
+        existing_slugs = {r[0] for r in conn.execute("SELECT slug FROM cities").fetchall()}
         for city, state, country, tier in rows:
-            is_intl = 0 if country.lower() in ("india", "भारत") else 1
-            slug = city.lower().replace(" ","-") + ("-indian-school-erp" if is_intl else "-school-erp")
+            val = validate_location_row(city, state, country, existing_slugs=existing_slugs)
             try:
                 conn.execute(
-                    "INSERT INTO cities(city_name,state_name,country,slug,tier,is_international) VALUES(?,?,?,?,?,?)",
-                    (city, state, country, slug, tier, is_intl)
+                    """
+                    INSERT INTO cities(city_name,state_name,country,slug,tier,is_international,review_state,validation_notes)
+                    VALUES(?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        val["city"], val["state"], val["country"], val["slug"], tier, val["is_international"],
+                        val["review_state"], json.dumps(val["reasons"])
+                    )
                 )
+                conn.execute(
+                    "INSERT INTO import_reviews(city_name,state_name,country,slug,review_state,reason_codes) VALUES(?,?,?,?,?,?)",
+                    (val["city"], val["state"], val["country"], val["slug"], val["review_state"], json.dumps(val["reasons"]))
+                )
+                existing_slugs.add(val["slug"])
                 added += 1
             except sqlite3.IntegrityError:
                 skipped += 1
@@ -2293,8 +2726,9 @@ class App(tk.Tk):
         srch = self._srch.get() if hasattr(self,"_srch") else ""
         flt  = self._flt.get() if hasattr(self,"_flt") else "All"
         conn = sqlite3.connect(DB_PATH)
-        q = """SELECT ci.id,ci.city_name,ci.state_name,ci.country,ci.tier,ci.is_international,
-                      gp.seo_score,gp.word_count,gp.generated_at
+        q = """SELECT ci.id,ci.city_name,ci.state_name,ci.country,ci.tier,ci.is_international,ci.review_state,
+                      gp.seo_score,gp.word_count,gp.generated_at,gp.publish_status,gp.quality_score,
+                      gp.claim_status,gp.schema_status,gp.video_status,gp.testimonial_status,gp.business_entity_status,gp.outdated_meta_status,gp.publish_safety_status
                FROM cities ci LEFT JOIN generated_pages gp ON gp.city_id=ci.id"""
         conds, params = [], []
         if srch:
@@ -2308,9 +2742,11 @@ class App(tk.Tk):
         q += " ORDER BY ci.country, ci.state_name, ci.city_name"
         rows = conn.execute(q, params).fetchall(); conn.close()
         for row in rows:
-            cid,city,state,country,tier,intl,score,wc,gat = row
+            cid,city,state,country,tier,intl,review_state,score,wc,gat,publish_status,quality_score,claim_status,schema_status,video_status,testimonial_status,biz_status,outdated_meta_status,safety_status = row
             status = "✅ Done" if gat else "⬜ Pending"
-            sc = f"{score}/100" if score else "—"
+            if publish_status and gat:
+                status = f"{status} • {publish_status} • {safety_status or 'manual_review'}"
+            sc = f"{score}/100 | QC {quality_score or 0} | schema:{schema_status or 'n/a'} | video:{video_status or 'n/a'}" if score else "—"
             tag = "done" if gat else ("intl" if intl else "pend")
             self.ctree.insert("","end", iid=str(cid),
                               values=(city,state,country,tier or "2",status,sc,wc or "—",(gat or "—")[:16]), tags=(tag,))
@@ -2329,14 +2765,19 @@ class App(tk.Tk):
         country = self._ctry.get().strip()
         if not city or not state:
             messagebox.showwarning("Input","Enter city name and state."); return
-        is_intl = 1 if country != "India" else 0
-        slug = city.lower().replace(" ","-") + ("-indian-school-erp" if is_intl else "-school-erp")
         conn = sqlite3.connect(DB_PATH)
+        existing_slugs = {r[0] for r in conn.execute("SELECT slug FROM cities").fetchall()}
+        val = validate_location_row(city, state, country, existing_slugs=existing_slugs)
         try:
-            conn.execute("INSERT INTO cities(city_name,state_name,country,slug,is_international) VALUES(?,?,?,?,?)",
-                         (city,state,country,slug,is_intl))
+            conn.execute(
+                """
+                INSERT INTO cities(city_name,state_name,country,slug,is_international,review_state,validation_notes)
+                VALUES(?,?,?,?,?,?,?)
+                """,
+                (val["city"], val["state"], val["country"], val["slug"], val["is_international"], val["review_state"], json.dumps(val["reasons"]))
+            )
             conn.commit(); self._cv.set("")
-            log_db("ADD_CITY", f"{city}, {state}, {country}")
+            log_db("ADD_CITY", f"{city}, {state}, {country}, review_state={val['review_state']}")
         except sqlite3.IntegrityError:
             messagebox.showwarning("Duplicate", f"{city} already exists.")
         finally:
@@ -2517,7 +2958,7 @@ class App(tk.Tk):
                 self._ui(self._bulk_log_append, f"Generating: {city}, {state}, {country}...")
 
                 try:
-                    slug = city.lower().replace(" ","-") + ("-indian-school-erp" if is_intl else "-school-erp")
+                    slug = sanitize_slug(city) + ("-indian-school-erp" if is_intl else "-school-erp")
 
                     # Per-thread DB connection — NO sharing across threads
                     db_conn = sqlite3.connect(DB_PATH)
@@ -2525,25 +2966,50 @@ class App(tk.Tk):
                     existing = db_conn.execute("SELECT first_generated_at FROM generated_pages WHERE slug=?", (slug,)).fetchone()
                     first_pub_date = existing[0] if existing and existing[0] else datetime.now().strftime("%Y-%m-%d")
 
-                    path, wc, score, meta, first_pub_date = generate_city_page(
+                    path, wc, score, meta, first_pub_date, qc, safety = generate_city_page(
                         city, state, od, country, is_intl, variation_seed=i, first_pub_date=first_pub_date
                     )
 
                     db_conn.execute("""
-                        INSERT INTO generated_pages(city_id,page_type,slug,file_path,word_count,seo_score,first_generated_at)
-                        VALUES(?,?,?,?,?,?,?)
+                        INSERT INTO generated_pages(
+                            city_id,page_type,slug,file_path,word_count,seo_score,first_generated_at,
+                            quality_score,publish_status,schema_status,similarity_score,proof_status,image_status,review_state,keyword_bucket_map,
+                            claim_status,video_status,business_entity_status,testimonial_status,outdated_meta_status,publish_safety_status
+                        )
+                        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                         ON CONFLICT(slug) DO UPDATE SET
                             file_path=excluded.file_path,
                             word_count=excluded.word_count,
                             seo_score=excluded.seo_score,
+                            quality_score=excluded.quality_score,
+                            publish_status=excluded.publish_status,
+                            schema_status=excluded.schema_status,
+                            similarity_score=excluded.similarity_score,
+                            proof_status=excluded.proof_status,
+                            image_status=excluded.image_status,
+                            review_state=excluded.review_state,
+                            keyword_bucket_map=excluded.keyword_bucket_map,
+                            claim_status=excluded.claim_status,
+                            video_status=excluded.video_status,
+                            business_entity_status=excluded.business_entity_status,
+                            testimonial_status=excluded.testimonial_status,
+                            outdated_meta_status=excluded.outdated_meta_status,
+                            publish_safety_status=excluded.publish_safety_status,
                             generated_at=CURRENT_TIMESTAMP
-                    """, (cid, "city", slug, path, wc, score, first_pub_date))
+                    """, (
+                        cid, "city", slug, path, wc, score, first_pub_date,
+                        qc.quality_score, qc.publish_status, qc.schema_status, qc.similarity_score,
+                        "verified" if "aggregaterating" in open(path, encoding="utf-8").read().lower() else "neutral",
+                        qc.image_status, "manual_review", json.dumps(KEYWORD_BUCKETS),
+                        safety.claim_status, safety.video_status, safety.business_entity_status,
+                        safety.testimonial_status, safety.outdated_meta_status, safety.publish_safety_status
+                    ))
                     db_conn.commit()
                     db_conn.close()
 
                     log_db("GEN", f"{city},{state},score={score},words={wc}")
                     ok_count += 1
-                    self._ui(self._bulk_log_append, f"  ✅ {city} — {score}/100 score, {wc} words")
+                    self._ui(self._bulk_log_append, f"  ✅ {city} — SEO {score}/100, QC {qc.quality_score}/100, publish={qc.publish_status}, safety={safety.publish_safety_status}, words={wc}")
 
                 except Exception as e:
                     err_count += 1
@@ -2584,31 +3050,66 @@ class App(tk.Tk):
         self._sout.insert("end", f"Generating {city}, {state}, {ctry}...\n")
         def work():
             try:
-                slug = city.lower().replace(" ","-") + ("-indian-school-erp" if is_intl else "-school-erp")
+                slug = sanitize_slug(city) + ("-indian-school-erp" if is_intl else "-school-erp")
                 conn = sqlite3.connect(DB_PATH)
-                conn.execute("INSERT OR IGNORE INTO cities(city_name,state_name,country,slug,is_international) VALUES(?,?,?,?,?)",
-                             (city,state,ctry,slug,1 if is_intl else 0))
+                v = validate_location_row(city, state, ctry)
+                slug = v["slug"]
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO cities(city_name,state_name,country,slug,is_international,review_state,validation_notes)
+                    VALUES(?,?,?,?,?,?,?)
+                    """,
+                    (v["city"], v["state"], v["country"], slug, 1 if is_intl else 0, v["review_state"], json.dumps(v["reasons"]))
+                )
                 conn.commit()
                 cid = conn.execute("SELECT id FROM cities WHERE city_name=? AND state_name=?",(city,state)).fetchone()[0]
                 conn.close()
-                path, wc, score, meta, first_pub_date = generate_city_page(city, state, od, ctry, is_intl, var)
+                path, wc, score, meta, first_pub_date, qc, safety = generate_city_page(city, state, od, ctry, is_intl, var)
                 conn = sqlite3.connect(DB_PATH)
                 existing = conn.execute("SELECT first_generated_at FROM generated_pages WHERE slug=?", (slug,)).fetchone()
                 first_pub_date = existing[0] if existing and existing[0] else first_pub_date
                 conn.execute("""
-                    INSERT INTO generated_pages(city_id,page_type,slug,file_path,word_count,seo_score,first_generated_at)
-                    VALUES(?,?,?,?,?,?,?)
+                    INSERT INTO generated_pages(
+                        city_id,page_type,slug,file_path,word_count,seo_score,first_generated_at,
+                        quality_score,publish_status,schema_status,similarity_score,proof_status,image_status,review_state,keyword_bucket_map,
+                        claim_status,video_status,business_entity_status,testimonial_status,outdated_meta_status,publish_safety_status
+                    )
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     ON CONFLICT(slug) DO UPDATE SET
                         file_path=excluded.file_path,
                         word_count=excluded.word_count,
                         seo_score=excluded.seo_score,
+                        quality_score=excluded.quality_score,
+                        publish_status=excluded.publish_status,
+                        schema_status=excluded.schema_status,
+                        similarity_score=excluded.similarity_score,
+                        proof_status=excluded.proof_status,
+                        image_status=excluded.image_status,
+                        review_state=excluded.review_state,
+                        keyword_bucket_map=excluded.keyword_bucket_map,
+                        claim_status=excluded.claim_status,
+                        video_status=excluded.video_status,
+                        business_entity_status=excluded.business_entity_status,
+                        testimonial_status=excluded.testimonial_status,
+                        outdated_meta_status=excluded.outdated_meta_status,
+                        publish_safety_status=excluded.publish_safety_status,
                         generated_at=CURRENT_TIMESTAMP
-                """, (cid,"city",slug,path,wc,score,first_pub_date))
+                """, (
+                    cid, "city", slug, path, wc, score, first_pub_date,
+                    qc.quality_score, qc.publish_status, qc.schema_status, qc.similarity_score,
+                    "verified" if "aggregaterating" in open(path, encoding="utf-8").read().lower() else "neutral",
+                    qc.image_status, "manual_review", json.dumps(KEYWORD_BUCKETS),
+                    safety.claim_status, safety.video_status, safety.business_entity_status,
+                    safety.testimonial_status, safety.outdated_meta_status, safety.publish_safety_status
+                ))
                 conn.commit(); conn.close()
                 def upd():
                     self._sout.insert("end", f"✅  File: {path}\n")
                     self._sout.insert("end", f"📝  Words: {wc}\n")
                     self._sout.insert("end", f"📊  SEO Score: {score}/100\n")
+                    self._sout.insert("end", f"🧪  QC Score: {qc.quality_score}/100\n")
+                    self._sout.insert("end", f"🚦  Publish Status: {qc.publish_status}\n")
+                    self._sout.insert("end", f"🛡  Safety Status: {safety.publish_safety_status}\n")
                     self._sout.insert("end", f"🔑  Target KW: school ERP software {city}\n")
                     self._sout.insert("end", f"🌐  URL: {_page_url(slug)}\n")
                     self._sout.insert("end", f"\n📋  Meta: {meta}\n")
@@ -3278,6 +3779,311 @@ https://tachy.in | +91 8434801033
             for r in rows: w.writerow(r)
         messagebox.showinfo("Exported", f"Keywords exported:\n{path}")
 
+    def _tab_publish_safety(self):
+        f = ttk.Frame(self.nb); self.nb.add(f, text="  🛡  Publish Safety  ")
+        f.columnconfigure(0, weight=1); f.rowconfigure(1, weight=1)
+        top = tk.Frame(f, bg="#060b18"); top.grid(row=0, column=0, sticky="ew", padx=14, pady=(12,6))
+        ttk.Button(top, text="🔄 Refresh Report", command=self._refresh_publish_safety).pack(side="left", padx=3)
+        ttk.Button(top, text="🧹 Rewrite Unsafe Claims", command=self._rewrite_unsafe_claims, style="Y.TButton").pack(side="left", padx=3)
+        self._safe_tree = ttk.Treeview(
+            f,
+            columns=("slug","publish","claim","schema","video","testimonial","business","meta","issues","created"),
+            show="headings"
+        )
+        widths = {"slug":220,"publish":90,"claim":90,"schema":80,"video":80,"testimonial":100,"business":100,"meta":80,"issues":260,"created":130}
+        for col in ("slug","publish","claim","schema","video","testimonial","business","meta","issues","created"):
+            self._safe_tree.heading(col, text=col.title())
+            self._safe_tree.column(col, width=widths[col], anchor="w")
+        self._safe_tree.grid(row=1, column=0, sticky="nsew", padx=14, pady=(0,8))
+        sb = ttk.Scrollbar(f, orient="vertical", command=self._safe_tree.yview)
+        self._safe_tree.configure(yscroll=sb.set); sb.grid(row=1, column=1, sticky="ns")
+        self._refresh_publish_safety()
+
+    def _refresh_publish_safety(self):
+        if not hasattr(self, "_safe_tree"):
+            return
+        for r in self._safe_tree.get_children():
+            self._safe_tree.delete(r)
+        conn = sqlite3.connect(DB_PATH)
+        rows = conn.execute(
+            """
+            SELECT slug,publish_safety_status,claim_status,schema_status,video_status,testimonial_status,business_entity_status,outdated_meta_status,issue_codes,created_at
+            FROM publish_safety_log
+            ORDER BY id DESC LIMIT 300
+            """
+        ).fetchall()
+        conn.close()
+        for row in rows:
+            self._safe_tree.insert("", "end", values=row)
+
+    def _rewrite_unsafe_claims(self):
+        conn = sqlite3.connect(DB_PATH)
+        rows = conn.execute(
+            """
+            SELECT gp.slug, gp.file_path, ci.city_name, ci.state_name
+            FROM generated_pages gp
+            JOIN cities ci ON ci.id = gp.city_id
+            WHERE gp.publish_safety_status != 'safe'
+            ORDER BY gp.generated_at DESC
+            LIMIT 100
+            """
+        ).fetchall()
+        rewritten = 0
+        for slug, file_path, city, state in rows:
+            if not file_path or not os.path.exists(file_path):
+                continue
+            try:
+                with open(file_path, "r", encoding="utf-8") as fh:
+                    html = fh.read()
+                proof_ctx = proof_mode_context(DB_PATH, city, state, freshness_days=int(cfg("proof_freshness_days") or "180"))
+                safety = run_publish_safety_validator(html, city, _s(), proof_ctx.get("mode", "neutral"), proof_ctx.get("testimonials", []))
+                with open(file_path, "w", encoding="utf-8") as fh:
+                    fh.write(safety.rewritten_html)
+                conn.execute(
+                    """
+                    INSERT INTO publish_safety_log(slug,publish_safety_status,issue_codes,claim_status,video_status,business_entity_status,testimonial_status,outdated_meta_status,schema_status)
+                    VALUES(?,?,?,?,?,?,?,?,?)
+                    """,
+                    (slug, safety.publish_safety_status, json.dumps(safety.issue_codes), safety.claim_status, safety.video_status,
+                     safety.business_entity_status, safety.testimonial_status, safety.outdated_meta_status, safety.schema_status)
+                )
+                conn.execute(
+                    """
+                    UPDATE generated_pages
+                    SET publish_safety_status=?, claim_status=?, video_status=?, business_entity_status=?, testimonial_status=?, outdated_meta_status=?
+                    WHERE slug=?
+                    """,
+                    (safety.publish_safety_status, safety.claim_status, safety.video_status, safety.business_entity_status, safety.testimonial_status, safety.outdated_meta_status, slug)
+                )
+                rewritten += 1
+            except Exception as exc:
+                log_db("SAFETY_REWRITE_ERR", f"{slug}: {exc}")
+        conn.commit(); conn.close()
+        self._refresh_publish_safety()
+        messagebox.showinfo("Publish Safety", f"Processed {rewritten} pages for unsafe-claim rewrites.")
+
+    def _tab_client_domains(self):
+        f = ttk.Frame(self.nb); self.nb.add(f, text="  🏫  Client Domains  ")
+        f.columnconfigure(1, weight=1); f.rowconfigure(3, weight=1)
+        self._cd_vars = {
+            "school_name": tk.StringVar(),
+            "school_domain": tk.StringVar(),
+            "city": tk.StringVar(),
+            "state": tk.StringVar(),
+            "board": tk.StringVar(value="CBSE"),
+            "school_type": tk.StringVar(value="K-12"),
+            "modules_used": tk.StringVar(value="fees,attendance,exams"),
+            "go_live_date": tk.StringVar(),
+            "support_email": tk.StringVar(),
+            "support_phone": tk.StringVar(),
+            "proof_status": tk.StringVar(value="neutral"),
+            "page_type": tk.StringVar(value="parent_help_center"),
+            "indexing_mode": tk.StringVar(value="auto"),
+            "link_rel": tk.StringVar(value="nofollow"),
+        }
+        fields = [("School Name","school_name"),("School Domain","school_domain"),("City","city"),("State","state"),("Board","board"),("School Type","school_type"),("Modules (comma-separated)","modules_used"),("Go Live Date","go_live_date"),("Support Email","support_email"),("Support Phone","support_phone")]
+        for i, (lbl, key) in enumerate(fields):
+            tk.Label(f, text=lbl, bg="#060b18", fg="#94a3b8").grid(row=i, column=0, sticky="w", padx=12, pady=3)
+            ttk.Entry(f, textvariable=self._cd_vars[key], width=42).grid(row=i, column=1, sticky="ew", padx=8, pady=3)
+        ctrl = tk.Frame(f, bg="#060b18"); ctrl.grid(row=len(fields), column=0, columnspan=2, sticky="ew", padx=12, pady=6)
+        ttk.Label(ctrl, text="Page Type").pack(side="left")
+        ttk.Combobox(ctrl, textvariable=self._cd_vars["page_type"], values=["our_erp_page","parent_help_center","fee_payment_guide","attendance_guide","report_card_guide","erp_announcement","digital_transformation_story","case_study","school_faq","app_download_guide"], width=24, state="readonly").pack(side="left", padx=6)
+        ttk.Label(ctrl, text="Proof").pack(side="left", padx=(10,0))
+        ttk.Combobox(ctrl, textvariable=self._cd_vars["proof_status"], values=["verified","neutral","unverified"], width=12, state="readonly").pack(side="left", padx=6)
+        ttk.Label(ctrl, text="Rel").pack(side="left")
+        ttk.Combobox(ctrl, textvariable=self._cd_vars["link_rel"], values=["follow","nofollow","sponsored"], width=12, state="readonly").pack(side="left", padx=6)
+        ttk.Button(ctrl, text="💾 Save School", command=self._save_client_school).pack(side="left", padx=6)
+        ttk.Button(ctrl, text="⚙ Generate Client Page", command=self._generate_client_page).pack(side="left", padx=6)
+        self._cd_report = scrolledtext.ScrolledText(f, height=12, bg="#040810", fg="#b6e3ff", font=("Consolas",9))
+        self._cd_report.grid(row=len(fields)+1, column=0, columnspan=2, sticky="nsew", padx=12, pady=8)
+
+    def _save_client_school(self):
+        v = {k: sv.get().strip() for k, sv in self._cd_vars.items()}
+        modules = [m.strip() for m in v["modules_used"].split(",") if m.strip()]
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute(
+            """
+            INSERT INTO client_schools(school_name,school_domain,city,state,board,school_type,modules_used,go_live_date,support_email,support_phone)
+            VALUES(?,?,?,?,?,?,?,?,?,?)
+            """,
+            (v["school_name"], v["school_domain"], v["city"], v["state"], v["board"], v["school_type"], json.dumps(modules), v["go_live_date"], v["support_email"], v["support_phone"])
+        )
+        conn.commit(); conn.close()
+        messagebox.showinfo("Saved", "Client school profile saved.")
+
+    def _generate_client_page(self):
+        v = {k: sv.get().strip() for k, sv in self._cd_vars.items()}
+        modules = [m.strip() for m in v["modules_used"].split(",") if m.strip()]
+        profile = {
+            "school_name": v["school_name"], "school_domain": v["school_domain"], "city": v["city"], "state": v["state"],
+            "board": v["board"], "school_type": v["school_type"], "modules_used": modules, "go_live_date": v["go_live_date"]
+        }
+        out = cfg("out_dir") or OUT_DIR
+        os.makedirs(out, exist_ok=True)
+        result = generate_client_page(v["page_type"], profile, _s(), proof_status=v["proof_status"])
+        html = result["html"]
+        tachy_sim = compare_with_tachy_pages(html, out)
+        client_sim = compare_with_other_client_pages(html, DB_PATH)
+        mode = auto_select_output_mode(v["page_type"], max(tachy_sim, client_sim), result["school_specificity_score"], v["proof_status"])
+        canonical_target = ""
+        if mode == "client_canonicalized":
+            canonical_target = _page_url(f"{sanitize_slug(v['city'])}-school-erp")
+            html = re.sub(r'<meta name="robots" content="[^"]*"/>', '<meta name="robots" content="noindex,nofollow"/>', html)
+            html = re.sub(r'<link rel="canonical" href="[^"]*"/>', f'<link rel="canonical" href="{canonical_target}"/>', html)
+        if result["school_specificity_score"] < 60:
+            html = apply_noindex_if_needed(html, "manual_review")
+        path = os.path.join(out, f"{result['slug']}.html")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(html)
+        anchors = ["TACHY School ERP"]
+        valid_anchors = [validate_client_anchor(a)[0] for a in anchors]
+        link_count = html.lower().count("tachy.in")
+        safety = run_publish_safety_validator(
+            html_doc=html,
+            city=v["city"],
+            config=_s(),
+            proof_mode=v["proof_status"],
+            testimonials=[],
+            client_context={
+                "school_specificity_score": result["school_specificity_score"],
+                "anchors": anchors,
+                "tachy_link_count": link_count,
+                "cross_domain_similarity": tachy_sim,
+                "canonical_mode": mode,
+            },
+        )
+        html = safety.rewritten_html
+        issue_codes = []
+        if result["school_specificity_score"] < 55: issue_codes.append("school_specificity_low")
+        if link_count > 2: issue_codes.append("client_tachy_link_overcount")
+        if not all(valid_anchors): issue_codes.append("exact_match_anchor_overuse")
+        if tachy_sim > 0.75: issue_codes.append("cross_domain_similarity_high")
+        issue_codes.extend(safety.issue_codes)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(html)
+        conn = sqlite3.connect(DB_PATH)
+        school_row = conn.execute("SELECT id FROM client_schools WHERE school_name=? AND school_domain=? ORDER BY id DESC LIMIT 1", (v["school_name"], v["school_domain"])).fetchone()
+        school_id = school_row[0] if school_row else None
+        conn.execute(
+            """
+            INSERT INTO client_pages(client_school_id,page_type,slug,file_path,visible_text,word_count,school_specificity_score,cross_domain_similarity_score,tachy_similarity_score,indexing_mode,canonical_target,backlink_mode,link_count_to_tachy,anchor_text_profile,proof_status,publish_status,publish_safety_status,reason_codes)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (school_id, v["page_type"], result["slug"], path, re.sub(r"<[^>]+>"," ",html), len(re.findall(r"\w+", re.sub(r"<[^>]+>"," ",html))), result["school_specificity_score"], client_sim, tachy_sim, mode, canonical_target, v["link_rel"], link_count, json.dumps({"anchors":anchors}), v["proof_status"], "manual_review" if issue_codes else "publish_ready", "manual_review" if issue_codes else "safe", json.dumps(issue_codes))
+        )
+        conn.execute("INSERT INTO client_similarity_log(client_slug,compared_to_slug,compared_to_domain,similarity_score,action_taken) VALUES(?,?,?,?,?)", (result["slug"], "", "tachy.in", tachy_sim, mode))
+        conn.execute("INSERT INTO canonical_decisions(slug,client_domain,decision_type,reason,similarity_score) VALUES(?,?,?,?,?)", (result["slug"], v["school_domain"], mode, ",".join(issue_codes) or "auto", max(tachy_sim, client_sim)))
+        if issue_codes:
+            conn.execute("INSERT INTO client_safety_log(client_slug,issue_codes,school_specificity_score,publish_status) VALUES(?,?,?,?)", (result["slug"], json.dumps(issue_codes), result["school_specificity_score"], "manual_review"))
+        conn.commit(); conn.close()
+        self._cd_report.insert("end", f"Generated: {path}\nMode: {mode}\nSpecificity: {result['school_specificity_score']}\nTachySim: {tachy_sim}\nClientSim: {client_sim}\nIssues: {issue_codes}\n\n")
+
+    def _tab_board_pages(self):
+        f = ttk.Frame(self.nb); self.nb.add(f, text="  📋  Board Pages  ")
+        f.columnconfigure(0, weight=1); f.rowconfigure(2, weight=1)
+        self._bp_board = tk.StringVar(value="CBSE")
+        self._bp_cities = tk.StringVar(value="Patna,Lucknow,Ranchi")
+        ttk.Combobox(f, textvariable=self._bp_board, values=["CBSE","ICSE","Bihar Board","UP Board","MP Board","RBSE","WBBSE"], state="readonly").grid(row=0,column=0,sticky="w",padx=12,pady=6)
+        ttk.Entry(f, textvariable=self._bp_cities).grid(row=1,column=0,sticky="ew",padx=12,pady=6)
+        ttk.Button(f, text="Generate Board+City Pages", command=self._generate_board_pages_bulk).grid(row=1,column=1,padx=8)
+        self._bp_log = scrolledtext.ScrolledText(f, height=16, bg="#040810", fg="#9bd2ff", font=("Consolas",9)); self._bp_log.grid(row=2,column=0,columnspan=2,sticky="nsew",padx=12,pady=8)
+
+    def _generate_board_pages_bulk(self):
+        board = self._bp_board.get(); cities = [c.strip() for c in self._bp_cities.get().split(",") if c.strip()]
+        out = cfg("out_dir") or OUT_DIR; os.makedirs(out, exist_ok=True)
+        conn = sqlite3.connect(DB_PATH)
+        for city in cities:
+            state = DISTRICT_TO_STATE.get(city, cfg("base_state") or "Bihar")
+            page = generate_board_city_page(board, city, state, cfg("website") or "https://tachy.in")
+            path = os.path.join(out, f"{page['slug']}.html"); open(path,"w",encoding="utf-8").write(page["html"])
+            conn.execute("INSERT OR REPLACE INTO board_pages(board,city,state,slug,file_path,word_count,seo_score,generated_at) VALUES(?,?,?,?,?,?,?,CURRENT_TIMESTAMP)", (board, city, state, page["slug"], path, len(re.findall(r'\\w+', re.sub(r'<[^>]+>',' ',page['html']))), 0))
+            self._bp_log.insert("end", f"{page['slug']}\n")
+        conn.commit(); conn.close()
+
+    def _tab_locality_pages(self):
+        f = ttk.Frame(self.nb); self.nb.add(f, text="  🏘  Locality Pages  ")
+        self._loc_city = tk.StringVar(value="Patna"); self._loc_state = tk.StringVar(value="Bihar"); self._loc_list = tk.StringVar(value="Kankarbagh,Boring Road,Danapur")
+        ttk.Entry(f, textvariable=self._loc_city).grid(row=0,column=0,padx=8,pady=6); ttk.Entry(f, textvariable=self._loc_state).grid(row=0,column=1,padx=8,pady=6); ttk.Entry(f, textvariable=self._loc_list,width=40).grid(row=1,column=0,columnspan=2,padx=8,pady=6)
+        ttk.Button(f, text="Generate Locality Pages", command=self._generate_locality_pages).grid(row=1,column=2,padx=8)
+
+    def _generate_locality_pages(self):
+        city, state = self._loc_city.get().strip(), self._loc_state.get().strip()
+        out = cfg("out_dir") or OUT_DIR; os.makedirs(out, exist_ok=True); conn=sqlite3.connect(DB_PATH)
+        for locality in [x.strip() for x in self._loc_list.get().split(",") if x.strip()]:
+            page = generate_locality_page(locality, city, state, cfg("website") or "https://tachy.in")
+            path = os.path.join(out, f"{page['slug']}.html"); open(path,"w",encoding="utf-8").write(page["html"])
+            conn.execute("INSERT OR REPLACE INTO locality_pages(locality,city,state,slug,file_path,word_count,seo_score,generated_at) VALUES(?,?,?,?,?,?,?,CURRENT_TIMESTAMP)", (locality, city, state, page["slug"], path, len(re.findall(r'\\w+', re.sub(r'<[^>]+>',' ',page['html']))), 0))
+        conn.commit(); conn.close(); messagebox.showinfo("Done","Locality pages generated.")
+
+    def _tab_module_city_pages(self):
+        f = ttk.Frame(self.nb); self.nb.add(f, text="  📦  Module+City  ")
+        self._mc_modules = tk.StringVar(value="fee-management,attendance,transport")
+        self._mc_cities = tk.StringVar(value="Lucknow,Patna,Ranchi")
+        ttk.Entry(f, textvariable=self._mc_modules, width=48).grid(row=0,column=0,padx=8,pady=6)
+        ttk.Entry(f, textvariable=self._mc_cities, width=48).grid(row=1,column=0,padx=8,pady=6)
+        ttk.Button(f, text="Generate Module+City", command=self._generate_module_city_pages).grid(row=1,column=1,padx=8)
+
+    def _generate_module_city_pages(self):
+        out = cfg("out_dir") or OUT_DIR; os.makedirs(out, exist_ok=True); conn=sqlite3.connect(DB_PATH)
+        mods = [m.strip() for m in self._mc_modules.get().split(",") if m.strip()]
+        cities = [c.strip() for c in self._mc_cities.get().split(",") if c.strip()]
+        for m in mods:
+            for city in cities:
+                state = DISTRICT_TO_STATE.get(city, cfg("base_state") or "Bihar")
+                page = generate_module_city_page(m, city, state, cfg("website") or "https://tachy.in")
+                path = os.path.join(out, f"{page['slug']}.html"); open(path,"w",encoding="utf-8").write(page["html"])
+                conn.execute("INSERT OR REPLACE INTO module_city_pages(module,city,state,slug,file_path,word_count,seo_score,generated_at) VALUES(?,?,?,?,?,?,?,CURRENT_TIMESTAMP)", (m, city, state, page["slug"], path, len(re.findall(r'\\w+', re.sub(r'<[^>]+>',' ',page['html']))), 0))
+        conn.commit(); conn.close(); messagebox.showinfo("Done","Module+city pages generated.")
+
+    def _tab_gbp_posts(self):
+        f = ttk.Frame(self.nb); self.nb.add(f, text="  💬  GBP Posts  ")
+        self._gbp_city = tk.StringVar(value="Patna"); self._gbp_state = tk.StringVar(value="Bihar")
+        ttk.Entry(f, textvariable=self._gbp_city).grid(row=0,column=0,padx=8,pady=6); ttk.Entry(f,textvariable=self._gbp_state).grid(row=0,column=1,padx=8,pady=6)
+        ttk.Button(f, text="Generate GBP Posts", command=self._generate_gbp_posts).grid(row=0,column=2,padx=8)
+        self._gbp_out = scrolledtext.ScrolledText(f, height=16, bg="#040810", fg="#ffd479", font=("Consolas",9)); self._gbp_out.grid(row=1,column=0,columnspan=3,sticky="nsew",padx=8,pady=8)
+
+    def _generate_gbp_posts(self):
+        city,state = self._gbp_city.get().strip(), self._gbp_state.get().strip()
+        posts = generate_gbp_posts(city, state, cfg("website") or "https://tachy.in", count=10)
+        conn = sqlite3.connect(DB_PATH)
+        self._gbp_out.delete("1.0","end")
+        for p in posts:
+            conn.execute("INSERT INTO gbp_posts(city,state,post_type,post_content,utm_url) VALUES(?,?,?,?,?)", (city,state,p["post_type"],p["post_content"],p["utm_url"]))
+            self._gbp_out.insert("end", f"{p['post_type']}: {p['post_content']}\n\n")
+        conn.commit(); conn.close()
+
+    def _tab_whatsapp_outreach(self):
+        f = ttk.Frame(self.nb); self.nb.add(f, text="  📲  WhatsApp Outreach  ")
+        self._wa_city = tk.StringVar(value="Patna"); self._wa_state = tk.StringVar(value="Bihar"); self._wa_board = tk.StringVar(value="CBSE"); self._wa_school = tk.StringVar(value="{school_name}")
+        for i,var in enumerate([self._wa_city,self._wa_state,self._wa_board,self._wa_school]):
+            ttk.Entry(f, textvariable=var, width=24).grid(row=0,column=i,padx=6,pady=6)
+        ttk.Button(f,text="Generate WA Variants",command=self._generate_wa_outreach).grid(row=0,column=4,padx=8)
+        self._wa_out = scrolledtext.ScrolledText(f, height=14, bg="#040810", fg="#8be9a8", font=("Consolas",9)); self._wa_out.grid(row=1,column=0,columnspan=5,sticky="nsew",padx=8,pady=8)
+
+    def _generate_wa_outreach(self):
+        msgs = generate_wa_broadcasts(self._wa_city.get().strip(), self._wa_state.get().strip(), self._wa_board.get().strip(), self._wa_school.get().strip())
+        conn = sqlite3.connect(DB_PATH); self._wa_out.delete("1.0","end")
+        for m in msgs:
+            conn.execute("INSERT INTO wa_broadcasts(city,state,target_role,message_text,char_count) VALUES(?,?,?,?,?)", (self._wa_city.get().strip(), self._wa_state.get().strip(), m["target_role"], m["message_text"], m["char_count"]))
+            self._wa_out.insert("end", f"[{m['target_role']}] {m['message_text']}\n")
+        conn.commit(); conn.close()
+
+    def _tab_hindi_pages(self):
+        f = ttk.Frame(self.nb); self.nb.add(f, text="  🇮🇳  Hindi Pages  ")
+        self._hi_state = tk.StringVar(value="Bihar"); self._hi_cities = tk.StringVar(value="Patna,Gaya,Muzaffarpur")
+        ttk.Combobox(f, textvariable=self._hi_state, values=["Bihar","Uttar Pradesh","Jharkhand","Madhya Pradesh","Chhattisgarh","Rajasthan","Delhi","Uttarakhand"], state="readonly").grid(row=0,column=0,padx=8,pady=6)
+        ttk.Entry(f, textvariable=self._hi_cities, width=42).grid(row=0,column=1,padx=8,pady=6)
+        ttk.Button(f, text="Generate Hindi Pages", command=self._generate_hindi_pages).grid(row=0,column=2,padx=8)
+
+    def _generate_hindi_pages(self):
+        out = cfg("out_dir") or OUT_DIR; os.makedirs(out, exist_ok=True)
+        for city in [c.strip() for c in self._hi_cities.get().split(",") if c.strip()]:
+            page = generate_hindi_city_page(city, self._hi_state.get().strip(), cfg("website") or "https://tachy.in")
+            path = os.path.join(out, f"{page['slug']}.html")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(page["html"])
+        messagebox.showinfo("Hindi Pages", "Hindi pages generated.")
+
     # ══════════════════════════════════════════════════════════
     #  TAB 7 — SETTINGS
     # ══════════════════════════════════════════════════════════
@@ -3304,12 +4110,18 @@ https://tachy.in | +91 8434801033
             # SEO subfolder — CRITICAL for tachy.in/seo/ deployment
             ("SEO Subfolder Path (e.g. seo)","seo_base_path"),
             ("YouTube Demo Video ID", "demo_video_id"),
+            ("YouTube Upload Date (YYYY-MM-DD)", "youtube_upload_date"),
+            ("YouTube Duration (ISO8601 e.g. PT2M30S)", "youtube_duration"),
             ("OG Share Image Path", "og_image"),
             ("Live Review Count (from G2/SoftwareSuggest)", "review_count"),
             ("Average Rating Score (e.g. 4.8)", "rating_value"),
             ("SoftwareSuggest URL", "softwaresuggest_url"),
             ("G2 Profile URL", "g2_url"),
             ("Capterra URL", "capterra_url"),
+            ("Has Physical Office In City (0/1)", "has_physical_office_in_city"),
+            ("Use Service Area Business Mode (0/1)", "use_service_area_business_mode"),
+            ("Primary Business City", "primary_business_city"),
+            ("Enable Legacy Meta Tags (0/1)", "enable_legacy_meta_tags"),
         ]
         for i, (lbl, key) in enumerate(fields, 1):
             tk.Label(inner, text=lbl, bg="#060b18", fg="#a0b4d4",
