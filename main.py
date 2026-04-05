@@ -61,6 +61,19 @@ HERO_INTROS = [
     "Leading schools in {city} have already switched to TACHY ERP. Join India's fastest-growing school management platform.",
 ]
 
+ANSWER_BLOCKS = [
+    "TACHY School ERP is cloud-based school management software for schools in {{city}}, {{state}}. It automates admissions, fee collection, attendance tracking, exam management, transport and HR — all in one platform. Compatible with CBSE, ICSE and {{board}}. Trusted by 500+ Indian schools. Free demo available at +91 8434801033.",
+    "School ERP software for {{city}} schools: TACHY is a complete digital management system that replaces paper registers, manual fee books and disconnected spreadsheets. {{city}} schools using TACHY save 3-5 admin hours daily. Supports CBSE, ICSE and {{board}} formats. Go live in 3-7 days.",
+    "Looking for school ERP software in {{city}}? TACHY School ERP manages admissions, fees, attendance, exams, transport and staff payroll for {{city}} schools. Works with CBSE, ICSE and {{board}}. Implementation takes just 3-7 working days with full onboarding support.",
+    "Managing a school in {{city}} just got easier. TACHY School ERP replaces paper fee registers, manual attendance rolls and disconnected spreadsheets with one cloud-based platform. Compatible with {{board}}, CBSE and ICSE. Schools in {{city}} go live in 3-7 days. Free demo: +91 8434801033.",
+    "{{city}} school administrators save 3-5 hours every day after switching to TACHY School ERP. Admissions, fee collection, attendance, report cards, transport and HR — all automated in one platform. Works with {{board}}, CBSE and ICSE. Book your free demo today.",
+    "School ERP software for {{city}}: TACHY is trusted by 500+ Indian schools to automate every admin task. From online fee collection to one-click CBSE report cards, {{city}} schools digitize completely within one week. Compatible with {{board}}. Free demo available.",
+    "TACHY School ERP gives {{city}} school principals real-time visibility into fees, attendance and performance — from any device. Cloud-based, no server needed. Compatible with {{board}}, CBSE and ICSE. 500+ schools live across India. Free personalized demo for {{city}} schools.",
+    "The complete school management platform for {{city}}: TACHY automates admissions enquiries, fee collection via UPI, daily attendance with WhatsApp alerts, exam mark entry, report card generation and transport tracking. Built for {{board}}, CBSE and ICSE schools. Free demo at tachy.in.",
+    "School owners in {{city}} choose TACHY School ERP for one reason: it works. Fee defaults drop, admin hours shrink, parent satisfaction rises. Cloud-based, Android app included, compatible with {{board}}. Go live in 3-7 days. Call +91 8434801033 for a free demo.",
+    "TACHY School ERP is India's school management platform for {{city}} schools of every size — from 100-student primary schools to 2,000-student senior secondary institutions. Supports {{board}}, CBSE and ICSE. Implementation in 3-7 days. Free demo and 30-day support included.",
+]
+
 WHY_PARAS = [
     "In {city}, school administrators face the daily challenge of managing hundreds of students, staff payrolls, exam records, and parent communication — all while keeping costs low. TACHY School ERP solves every challenge in one connected platform.",
     "Schools in {city} and across {state} are switching from paper registers and disconnected spreadsheets to TACHY's unified digital platform. The result? Less admin time, faster fee collection, and happier parents.",
@@ -216,6 +229,17 @@ STATE_DATA = {
     "DEFAULT":          {"board":"CBSE / State Board","cities_count":"200+","code":"IN","hindi":"भारत","schools":"thousands of"},
 }
 
+DISTRICT_TO_STATE = {
+    "Araria":"Bihar","Begusarai":"Bihar","Samastipur":"Bihar",
+    "Katihar":"Bihar","Muzaffarpur":"Bihar","Darbhanga":"Bihar",
+    "Purnia":"Bihar","Bhagalpur":"Bihar","Gaya":"Bihar","Munger":"Bihar",
+    "Chhapra":"Bihar","Hajipur":"Bihar","Sitamarhi":"Bihar","Motihari":"Bihar",
+    "Kishanganj":"Bihar","Supaul":"Bihar","Madhubani":"Bihar","Nawada":"Bihar",
+    "Jehanabad":"Bihar","Siwan":"Bihar","Saran":"Bihar","Vaishali":"Bihar",
+    "Gopalganj":"Bihar","Ara":"Bihar",
+    "Bhojpur":"Bihar","Bhojpur (Ara)":"Bihar",
+}
+
 INTERNATIONAL_CITIES = [
     ("Dubai","UAE",0),("Abu Dhabi","UAE",0),("Sharjah","UAE",0),
     ("London","UK",0),("Birmingham","UK",0),
@@ -355,6 +379,7 @@ def init_db():
         file_path TEXT,
         word_count INTEGER DEFAULT 0,
         seo_score INTEGER DEFAULT 0,
+        first_generated_at TEXT DEFAULT CURRENT_TIMESTAMP,
         generated_at TEXT DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY(city_id) REFERENCES cities(id)
     );
@@ -401,9 +426,23 @@ def init_db():
         # SEO subfolder path — e.g. "seo" → tachy.in/seo/city-slug/
         # Leave blank for root:  tachy.in/city-slug/
         "seo_base_path":"",
+        "demo_video_id":"",
+        "og_image":"/assets/og-tachy-school-erp.jpg",
+        "rating_value":"4.8",
+        "review_count":"0",
+        "softwaresuggest_url":"",
+        "g2_url":"",
+        "capterra_url":"",
     }
     for k, v in defaults.items():
         c.execute("INSERT OR IGNORE INTO settings VALUES(?,?)", (k, v))
+
+    # Backward-compatible migration for existing DBs
+    gp_cols = [r[1] for r in c.execute("PRAGMA table_info(generated_pages)").fetchall()]
+    if "first_generated_at" not in gp_cols:
+        c.execute("ALTER TABLE generated_pages ADD COLUMN first_generated_at TEXT")
+        c.execute("UPDATE generated_pages SET first_generated_at = COALESCE(first_generated_at, generated_at)")
+
 
     # 200+ Indian cities
     indian_cities = [
@@ -615,9 +654,39 @@ def _index_url(s=None):
     """URL for the master index page."""
     return f"{_base_url(s)}/school-erp-india.html"
 
+def _slugify_text(text):
+    """Creates URL-safe slugs by removing punctuation and collapsing separators."""
+    text = re.sub(r"[^a-z0-9]+", "-", text.lower())
+    return re.sub(r"-+", "-", text).strip("-")
+
 def _state_url(state, s=None):
     """URL for a state hub page."""
-    return f"{_base_url(s)}/school-erp-{state.lower().replace(' ', '-')}.html"
+    return f"{_base_url(s)}/school-erp-{_slugify_text(state)}.html"
+
+def _org_schema(s):
+    """Returns Organization schema dict for inclusion in any page's @graph."""
+    return {
+        "@type": "Organization",
+        "@id": s.get('website','') + "/#org",
+        "name": s.get('brand','TACHY SCHOOL ERP'),
+        "url": s.get('website',''),
+        "logo": {
+            "@type": "ImageObject",
+            "url": s.get('website','') + "/assets/tachy-logo.png",
+            "width": 200,
+            "height": 60
+        },
+        "telephone": s.get('phone',''),
+        "email": s.get('email',''),
+        "foundingDate": "2020",
+        "areaServed": "India",
+        "sameAs": [
+            s.get('website',''),
+            s.get('softwaresuggest_url',''),
+            s.get('g2_url',''),
+            s.get('capterra_url',''),
+        ]
+    }
 
 # ══════════════════════════════════════════════════════════════════════
 #  HTML GENERATION ENGINE v3
@@ -676,13 +745,23 @@ def _seo_score_v3(html, city, state):
         (2, "free demo" in lhtml or "freedemo" in lhtml),
         (2, "breadcrumb" in lhtml),
         (2, "internal link" in lhtml or "rel-link" in lhtml),
-        (3, 4 <= html.lower().count(lcity) <= 14),
+        (3, html.lower().count(lcity) >= 15),
         (3, any(kw in lhtml for kw in ["cbse", "icse", "state board", "fee collection", "attendance", "report card"])),
         (3, "admissions" in lhtml and "fees" in lhtml and "attendance" in lhtml and "exams" in lhtml),
         (2, "mobile" in lhtml or "parent" in lhtml),
         (2, "compare" in lhtml or "evaluation" in lhtml or "fit" in lhtml),
         (3, len(re.findall(r'\w+', re.sub(r'<[^>]+>', '', html))) >= 1200),
         (2, "preconnect" in lhtml),
+        (3, "answer-block" in lhtml),
+        (2, "speakablespecification" in lhtml),
+        (2, "howto" in lhtml),
+        (2, "datepublished" in lhtml),
+        (2, 'media="print"' in lhtml or "media='print'" in lhtml),
+        (2, "tel:+91" in lhtml and 'tel:+91 ' not in lhtml),
+        (3, html.lower().count(lcity) >= 15),
+        (2, "roi-calculator" in lhtml or "calculateroi" in lhtml),
+        (2, "loading=" in lhtml and "lazy" in lhtml),
+        (2, "datemodified" in lhtml),
     ]
     for pts, ok in checks:
         if ok: score += pts
@@ -692,29 +771,50 @@ def _related_cities_html(city, state, s):
     related = []
     try:
         conn = sqlite3.connect(DB_PATH)
-        rows = conn.execute("SELECT city_name, slug FROM cities WHERE state_name=? AND city_name!=? LIMIT 8", (state, city)).fetchall()
+        lookup_state = DISTRICT_TO_STATE.get(state, state)
+        rows = conn.execute(
+            "SELECT city_name, slug FROM cities WHERE state_name IN (?,?) AND city_name!=? LIMIT 8",
+            (state, lookup_state, city)
+        ).fetchall()
         conn.close()
         related = rows
     except: pass
     if not related: return ""
     links = " | ".join(f'<a href="{_page_url(r[1], s)}" class="rel-link">School ERP {r[0]}</a>' for r in related)
-    return f'<div class="related-cities"><span class="rel-label">📍 Also serving {state}:</span> {links}</div>'
+    return f'<div class="related-cities"><span class="rel-label">📍 Also serving {lookup_state}:</span> {links}</div>'
 
-def generate_city_html(city, state, country="India", is_international=False, variation_seed=0):
+def generate_city_html(city, state, country="India", is_international=False, variation_seed=0, first_pub_date="2025-01-01"):
     random.seed(variation_seed or abs(hash(city + state + str(variation_seed))) % 99999)
     s   = _s()
     cf  = _city_facts(city)
     sd  = _state_data(state if country=="India" else "DEFAULT")
+    lookup_state = DISTRICT_TO_STATE.get(state, state)
+    if lookup_state != state:
+        sd = _state_data(lookup_state)
+    board_short = (sd['board']
+        if sd['board'] not in ["CBSE / State Board", "CBSE/State Board"]
+        else sd['board'].replace("CBSE / ", "").replace("CBSE/", "").strip())
+    HINDI_STATES = {"Bihar","Uttar Pradesh","Jharkhand","Madhya Pradesh","Chhattisgarh","Rajasthan","Delhi","Uttarakhand"}
+    HINDI_STATE_NAMES = {
+        "Bihar":"बिहार","Uttar Pradesh":"उत्तर प्रदेश","Jharkhand":"झारखंड",
+        "Madhya Pradesh":"मध्य प्रदेश","Chhattisgarh":"छत्तीसगढ़","Rajasthan":"राजस्थान",
+        "Delhi":"दिल्ली","Uttarakhand":"उत्तराखंड"
+    }
     yr  = datetime.now().year
     slug = city.lower().replace(" ","-") + ("-indian-school-erp" if is_international else "-school-erp")
     canonical = _page_url(slug, s)
     website = s.get('website','https://tachy.in')
     phone = s.get('phone','+91 8434801033')
+    tel_phone = phone.replace(" ", "").replace("-", "")
     wa = s.get('wa','918434801033')
     email = s.get('email','info@tachy.in')
     brand = s.get('brand','TACHY SCHOOL ERP')
     short = s.get('short','TACHY')
     ga = s.get('ga','')
+    og_image = s.get('og_image', '/assets/og-tachy-school-erp.jpg')
+    video_id = s.get('demo_video_id', '').strip()
+    rating_val = s.get('rating_value', '4.8')
+    review_cnt = int(s.get('review_count', '0') or '0')
 
     # Unique per-city content
     hero_intro    = _vary(HERO_INTROS, city, state, cf)
@@ -724,9 +824,38 @@ def generate_city_html(city, state, country="India", is_international=False, var
     closing_para  = _vary(CLOSING_PARAS, city, state, cf)
     testi_picks   = random.sample(TESTIMONIALS_POOL, min(3, len(TESTIMONIALS_POOL)))
     faq_picks     = random.sample(FAQS_POOL, 6)
+    answer_block = (random.choice(ANSWER_BLOCKS).replace("{{city}}", city).replace("{{state}}", state).replace("{{board}}", board_short))
 
     location_label = f"{city}, {country}" if is_international else f"{city}, {state}"
-    geo_code = "AE" if country=="UAE" else "GB" if country=="UK" else "US" if country=="USA" else f"IN-{sd['code']}"
+    breadcrumb_state = lookup_state
+    breadcrumb_state_label = f"School ERP {lookup_state}"
+    breadcrumb_state_url = _state_url(lookup_state, s)
+    lookup_state_for_hindi = lookup_state
+    hindi_state_name = HINDI_STATE_NAMES.get(lookup_state_for_hindi, "")
+    hindi_meta = ""
+    if lookup_state_for_hindi in HINDI_STATES and hindi_state_name:
+        hindi_meta = f'<meta name="description" lang="hi" content="{city} स्कूलों के लिए TACHY स्कूल ERP सॉफ्टवेयर — प्रवेश, फीस, उपस्थिति एक प्लेटफार्म पर। {hindi_state_name} बोर्ड सहित। फ्री डेमो: +91 8434801033"/>'
+    if country == "India":
+        state_code = sd.get('code', '')
+        # Fix: if state_code is "IN" (DEFAULT fallback), look up correct code from state name
+        MANUAL_STATE_CODES = {"Bihar":"BR","Uttar Pradesh":"UP","Jharkhand":"JH","West Bengal":"WB","Odisha":"OD","Madhya Pradesh":"MP","Chhattisgarh":"CG","Delhi":"DL","Haryana":"HR","Rajasthan":"RJ","Maharashtra":"MH","Karnataka":"KA","Tamil Nadu":"TN","Telangana":"TG","Andhra Pradesh":"AP","Gujarat":"GJ","Punjab":"PB","Assam":"AS","Kerala":"KL"}
+        if state_code == "IN" or not state_code:
+            state_code = MANUAL_STATE_CODES.get(lookup_state, "IN")
+        geo_code = f"IN-{state_code}"
+    elif country == "UAE":
+        geo_code = "AE"
+    elif country == "UK":
+        geo_code = "GB"
+    elif country == "USA":
+        geo_code = "US"
+    elif country == "Canada":
+        geo_code = "CA"
+    elif country == "Singapore":
+        geo_code = "SG"
+    elif country == "Australia":
+        geo_code = "AU"
+    else:
+        geo_code = "IN"
 
     title     = f"School ERP Software in {city} | {brand}"
     meta_desc = (f"Best school ERP software in {city}. {short} automates admissions, fee collection, attendance, exams & transport. "
@@ -776,54 +905,89 @@ def generate_city_html(city, state, country="India", is_international=False, var
     related_html = _related_cities_html(city, state, s)
 
     # ── Schema ─────────────────────────────────────────────────
+    software_entry = {
+        "@type": "SoftwareApplication",
+        "name": brand,
+        "applicationCategory": "BusinessApplication",
+        "operatingSystem": "Web Browser, Android",
+        "offers": {"@type": "Offer", "priceCurrency": "INR", "availability": "https://schema.org/InStock"},
+    }
+    if review_cnt > 0:
+        software_entry["aggregateRating"] = {
+            "@type": "AggregateRating",
+            "ratingValue": rating_val,
+            "reviewCount": str(review_cnt),
+            "bestRating": "5",
+            "worstRating": "1"
+        }
+    schema_graph = [
+        {
+            "@type":"WebPage","@id":canonical+"#webpage",
+            "url":canonical,
+            "name":title,
+            "description":meta_desc,
+            "inLanguage":"en-IN",
+            "datePublished":first_pub_date,
+            "dateModified":datetime.now().strftime("%Y-%m-%d"),
+            "author":{"@type":"Organization", "name":brand, "url":website},
+            "publisher":{"@type":"Organization", "name":brand, "url":website},
+            "breadcrumb":{"@id":canonical+"#breadcrumb"}
+        },
+        {
+            "@type":"BreadcrumbList","@id":canonical+"#breadcrumb",
+            "itemListElement":[
+                {"@type":"ListItem","position":1,"name":"Home","item":website+"/"},
+                {"@type":"ListItem","position":2,"name":"School ERP India","item":_index_url(s)},
+                {"@type":"ListItem","position":3,"name":breadcrumb_state_label,"item":breadcrumb_state_url},
+                {"@type":"ListItem","position":4,"name":f"School ERP {city}","item":canonical}
+            ]
+        },
+        {
+            "@type":"LocalBusiness","@id":website+"/#org",
+            "name":brand,"url":website,"telephone":phone,"email":email,
+            "address":{"@type":"PostalAddress","addressLocality":"Katihar","addressRegion":"Bihar",
+                        "postalCode":"854105","addressCountry":"IN"},
+            "areaServed":[city,state,"India"],
+            "sameAs":[website],
+            "description":f"School ERP Software for schools in {city}, {state}."
+        },
+        software_entry,
+        {"@type":"FAQPage","mainEntity":json.loads(f"[{faq_schema_items}]")},
+        {
+            "@type": "SpeakableSpecification",
+            "@context": "https://schema.org",
+            "cssSelector": [".answer-block", ".hbadge", ".hero-p"]
+        },
+        {
+            "@type": "HowTo",
+            "name": f"How to implement school ERP software in {city} — Step by Step",
+            "description": f"Complete guide for school owners in {city}, {state} to digitize school management using TACHY School ERP.",
+            "totalTime": "P7D",
+            "step": [
+                {"@type": "HowToStep", "position": 1, "name": "Book a free demo", "text": f"Contact TACHY at {phone} or visit tachy.in to book a free live demo customized for your {city} school."},
+                {"@type": "HowToStep", "position": 2, "name": "Choose your modules", "text": f"Select modules your school needs — admissions, fees, attendance, exams, transport, HR. All compatible with {board_short}."},
+                {"@type": "HowToStep", "position": 3, "name": "Data migration", "text": f"TACHY team migrates all student records, fee structures and class data for your {city} school in 1-2 days."},
+                {"@type": "HowToStep", "position": 4, "name": "Staff training", "text": f"On-site or remote training for all staff. Average training time: 3-4 hours for complete team in {city}."},
+                {"@type": "HowToStep", "position": 5, "name": "Go live", "text": f"Your {city} school goes fully digital within 3-7 working days with 30-day WhatsApp support included."}
+            ]
+        }
+    ]
+
+    if video_id:
+        schema_graph.append({
+            "@type":"VideoObject",
+            "name": f"TACHY School ERP Demo for {city}",
+            "description": f"See how TACHY School ERP works for schools in {city}, {state}. Full demo of admissions, fees, attendance and exam modules.",
+            "thumbnailUrl": f"{website}/assets/video-thumb.jpg",
+            "uploadDate": "2025-01-15T08:00:00+05:30",
+            "contentUrl": f"https://www.youtube.com/watch?v={video_id}",
+            "embedUrl": f"https://www.youtube.com/embed/{video_id}",
+            "duration": "PT8M30S"
+        })
+
     schema = json.dumps({
         "@context":"https://schema.org",
-        "@graph":[
-            {
-                "@type":"WebPage","@id":canonical+"#webpage",
-                "url":canonical,
-                "name":title,
-                "description":meta_desc,
-                "inLanguage":"en-IN",
-                "dateModified":datetime.now().strftime("%Y-%m-%d"),
-                "breadcrumb":{"@id":canonical+"#breadcrumb"}
-            },
-            {
-                "@type":"BreadcrumbList","@id":canonical+"#breadcrumb",
-                "itemListElement":[
-                    {"@type":"ListItem","position":1,"name":"Home","item":website+"/"},
-                    {"@type":"ListItem","position":2,"name":"School ERP India","item":_index_url(s)},
-                    {"@type":"ListItem","position":3,"name":f"School ERP {state}","item":_state_url(state,s)},
-                    {"@type":"ListItem","position":4,"name":f"School ERP {city}","item":canonical}
-                ]
-            },
-            {
-                "@type":"LocalBusiness","@id":website+"/#org",
-                "name":brand,"url":website,"telephone":phone,"email":email,
-                "address":{"@type":"PostalAddress","addressLocality":"Katihar","addressRegion":"Bihar",
-                            "postalCode":"854105","addressCountry":"IN"},
-                "areaServed":[city,state,"India"],
-                "sameAs":[website],
-                "description":f"School ERP Software for schools in {city}, {state}."
-            },
-            {
-                "@type":"SoftwareApplication","name":brand,
-                "applicationCategory":"BusinessApplication",
-                "operatingSystem":"Web Browser, Android",
-                "offers":{"@type":"Offer","priceCurrency":"INR","availability":"https://schema.org/InStock"},
-                "aggregateRating":{"@type":"AggregateRating","ratingValue":"4.8","reviewCount":"124","bestRating":"5"}
-            },
-            {
-                "@type":"VideoObject",
-                "name": f"TACHY School ERP Demo for {city}",
-                "description": f"Complete overview of TACHY School ERP software designed for schools across India.",
-                "thumbnailUrl": f"{website}/assets/video-thumb.jpg",
-                "uploadDate": "2024-01-15T08:00:00+08:00",
-                "contentUrl": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-                "embedUrl": "https://www.youtube.com/embed/dQw4w9WgXcQ"
-            },
-            {"@type":"FAQPage","mainEntity":json.loads(f"[{faq_schema_items}]")}
-        ]
+        "@graph": schema_graph
     }, ensure_ascii=False, indent=2)
 
     ga_code = ""
@@ -839,6 +1003,7 @@ def generate_city_html(city, state, country="India", is_international=False, var
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>{title}</title>
 <meta name="description" content="{meta_desc}"/>
+{hindi_meta}
 <meta name="keywords" content="{kw_str}"/>
 <meta name="robots" content="index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1"/>
 <link rel="canonical" href="{canonical}"/>
@@ -855,7 +1020,8 @@ def generate_city_html(city, state, country="India", is_international=False, var
 <meta property="og:url" content="{canonical}"/>
 <meta property="og:site_name" content="{brand}"/>
 <meta property="og:locale" content="en_IN"/>
-<meta property="og:image" content="{website}/assets/og-school-erp-{city.lower().replace(' ','-')}.jpg"/>
+<meta property="og:image" content="{website}{og_image}"/>
+<meta property="og:image:alt" content="TACHY School ERP Software for schools in {city}, {state}"/>
 <meta property="og:image:width" content="1200"/>
 <meta property="og:image:height" content="630"/>
 <meta name="twitter:card" content="summary_large_image"/>
@@ -870,7 +1036,9 @@ def generate_city_html(city, state, country="India", is_international=False, var
 {ga_code}
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
-<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800;900&family=Lora:wght@400;600&display=swap" rel="stylesheet"/>
+<link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;700;900&family=Lora:wght@400;600&display=swap"/>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;700;900&family=Lora:wght@400;600&display=swap" media="print" onload="this.media='all'"/>
+<noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;700;900&display=swap"/></noscript>
 <style>
 :root{{
   --bg:#05091a;--bg2:#0c1330;--card:#0f1a38;--border:#1e2f52;
@@ -1022,7 +1190,7 @@ footer{{border-top:1px solid var(--border);padding:24px 0;color:var(--muted);fon
  <nav class="bcrumb" aria-label="Breadcrumb">
   <a href="{website}/">Home</a><span>›</span>
   <a href="{_index_url(s)}">School ERP India</a><span>›</span>
-  <a href="{_state_url(state,s)}">School ERP {state}</a><span>›</span>
+  <a href="{breadcrumb_state_url}">{breadcrumb_state_label}</a><span>›</span>
   <span>School ERP {city}</span>
  </nav>
 </div>
@@ -1032,16 +1200,17 @@ footer{{border-top:1px solid var(--border);padding:24px 0;color:var(--muted);fon
  <div class="wrap">
   <div class="hbadge"><div class="dot"></div> Now Serving Schools in {location_label}</div>
   <h1>#1 <span class="grad">School ERP Software</span><br>in {city}, {state}</h1>
+  <div class="answer-block" itemprop="description" style="background:rgba(45,212,191,.06);border-left:3px solid var(--c);padding:14px 20px;border-radius:0 12px 12px 0;margin-bottom:20px;font-size:15px;line-height:1.75;color:#c8d8e8;max-width:800px">{answer_block}</div>
   <p class="hero-p">{hero_intro}</p>
   <p class="hero-p" style="font-size:15px;margin-top:-8px">{opening_para}</p>
   <div class="hbtns">
    <a class="btn btn-p btn-lg" href="{website}/leadform.php">📅 Book Free Demo — {city}</a>
    <a class="btn btn-w btn-lg" href="https://wa.me/{wa}?text=Hi+TACHY,+ERP+demo+for+{urllib.parse.quote(city)}+school">💬 WhatsApp Now</a>
-   <a class="btn btn-o btn-lg" href="tel:{phone}">📞 {phone}</a>
+   <a class="btn btn-o btn-lg" href="tel:{tel_phone}">📞 {phone}</a>
   </div>
   <div class="hstats">
    <div class="hstat"><b>10</b> Modules</div>
-   <div class="hstat"><b>CBSE</b> / ICSE / {sd['board']}</div>
+   <div class="hstat"><b>CBSE</b> / ICSE / {board_short}</div>
    <div class="hstat"><b>Web</b> + Android App</div>
    <div class="hstat"><b>3–7 Days</b> Go-Live</div>
    <div class="hstat"><b>500+</b> Schools Trust TACHY</div>
@@ -1062,6 +1231,29 @@ footer{{border-top:1px solid var(--border);padding:24px 0;color:var(--muted);fon
   </div>
  </div>
 </div>
+
+
+<section style="padding:40px 0;border-bottom:1px solid var(--border)">
+ <div class="wrap">
+  <div class="badge">Product Screenshots</div>
+  <h2 style="margin-bottom:10px">See TACHY Working for <span class="grad">{city} Schools</span></h2>
+  <p class="sub">The actual dashboard {city} school administrators open every morning.</p>
+  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px">
+   <img src="{website}/assets/screenshots/fee-management-dashboard.webp"
+        alt="School fee management software dashboard for {city} schools — TACHY ERP"
+        loading="lazy" width="400" height="250"
+        style="border-radius:12px;border:1px solid var(--border);width:100%;height:auto"/>
+   <img src="{website}/assets/screenshots/attendance-tracking.webp"
+        alt="Student attendance management software for {city}, {state} — TACHY School ERP"
+        loading="lazy" width="400" height="250"
+        style="border-radius:12px;border:1px solid var(--border);width:100%;height:auto"/>
+   <img src="{website}/assets/screenshots/report-card-generator.webp"
+        alt="CBSE report card generator for {city} schools — one-click PDF — TACHY ERP"
+        loading="lazy" width="400" height="250"
+        style="border-radius:12px;border:1px solid var(--border);width:100%;height:auto"/>
+  </div>
+ </div>
+</section>
 
 <!-- TRUST BADGES & RATINGS -->
 <section style="background:rgba(255,255,255,.02); border-bottom:1px solid var(--border); padding:40px 0">
@@ -1247,12 +1439,12 @@ footer{{border-top:1px solid var(--border);padding:24px 0;color:var(--muted);fon
     <div class="cbtns">
      <a class="btn btn-p btn-lg" href="{website}/leadform.php">📅 Book Free Live Demo</a>
      <a class="btn btn-w btn-lg" href="https://wa.me/{wa}?text=Hi+TACHY,+ERP+demo+for+{urllib.parse.quote(city)}">💬 WhatsApp Now</a>
-     <a class="btn btn-o btn-lg" href="tel:{phone}">📞 Call Now</a>
+     <a class="btn btn-o btn-lg" href="tel:{tel_phone}">📞 Call Now</a>
     </div>
    </div>
    <div class="contact-panel">
     <h4>Contact TACHY Team</h4>
-    <div class="ci"><div class="ciconb">📞</div><a href="tel:{phone}" style="color:inherit">{phone}</a></div>
+    <div class="ci"><div class="ciconb">📞</div><a href="tel:{tel_phone}" style="color:inherit">{phone}</a></div>
     <div class="ci"><div class="ciconb">💬</div>WhatsApp: {phone}</div>
     <div class="ci"><div class="ciconb">📧</div><a href="mailto:{email}" style="color:inherit">{email}</a></div>
     <div class="ci"><div class="ciconb">🌐</div><a href="{website}" style="color:inherit">{website}</a></div>
@@ -1272,8 +1464,8 @@ footer{{border-top:1px solid var(--border);padding:24px 0;color:var(--muted);fon
    <a href="{website}/schoolerp.php">Features</a>
    <a href="{website}/leadform.php">Free Demo</a>
    <a href="{_index_url(s)}">All States</a>
-   <a href="{_state_url(state,s)}">School ERP {state}</a>
-   <a href="tel:{phone}">{phone}</a>
+   <a href="{breadcrumb_state_url}">{breadcrumb_state_label}</a>
+   <a href="tel:{tel_phone}">{phone}</a>
   </div>
  </div>
 </footer>
@@ -1283,8 +1475,21 @@ function tFaq(btn){{
   var a=btn.nextElementSibling,ar=btn.querySelector('.farrow'),open=a.classList.contains('open');
   document.querySelectorAll('.faq-a.open').forEach(function(x){{x.classList.remove('open');}});
   document.querySelectorAll('.farrow').forEach(function(x){{x.style.transform='';}});
-  if(!open){{a.classList.add('open');ar.style.transform='rotate(180deg)';}}
+  document.querySelectorAll('.faq-q').forEach(function(x){{x.setAttribute('aria-expanded','false');}});
+  if(!open){{
+    a.classList.add('open');
+    ar.style.transform='rotate(180deg)';
+    btn.setAttribute('aria-expanded','true');
+  }}
 }}
+document.addEventListener('DOMContentLoaded',function(){{
+  document.querySelectorAll('.faq-q').forEach(function(btn){{
+    btn.setAttribute('aria-expanded','false');
+    btn.addEventListener('keydown',function(e){{
+      if(e.key==='Enter'||e.key===' '){{e.preventDefault();tFaq(btn);}}
+    }});
+  }});
+}});
 function calculateROI() {{
   var students = document.getElementById("roi-students").value;
   if(students > 0) {{
@@ -1303,10 +1508,10 @@ document.querySelectorAll('.btn-p').forEach(function(b){{
 </html>"""
     return html
 
-def generate_city_page(city, state, output_dir, country="India", is_international=False, variation_seed=0):
+def generate_city_page(city, state, output_dir, country="India", is_international=False, variation_seed=0, first_pub_date="2025-01-01"):
     os.makedirs(output_dir, exist_ok=True)
     slug = city.lower().replace(" ","-") + ("-indian-school-erp" if is_international else "-school-erp")
-    html = generate_city_html(city, state, country, is_international, variation_seed)
+    html = generate_city_html(city, state, country, is_international, variation_seed, first_pub_date=first_pub_date)
     path = os.path.join(output_dir, slug + ".html")
     with open(path, "w", encoding="utf-8") as f:
         f.write(html)
@@ -1314,7 +1519,7 @@ def generate_city_page(city, state, output_dir, country="India", is_internationa
     score = _seo_score_v3(html, city, state)
     meta  = (f"Best school ERP software in {city}, {state}. TACHY automates admissions, fees, "
              f"attendance, exams & transport. Free demo: {cfg('phone')}.")
-    return path, wc, score, meta
+    return path, wc, score, meta, first_pub_date
 
 def generate_state_hub_html(state, cities_data):
     s = _s()
@@ -1322,18 +1527,24 @@ def generate_state_hub_html(state, cities_data):
     yr = datetime.now().year
     website = s.get('website','https://tachy.in')
     phone = s.get('phone','+91 8434801033')
+    tel_phone = phone.replace(" ", "").replace("-", "")
     brand = s.get('brand','TACHY SCHOOL ERP')
     short = s.get('short','TACHY')
-    slug  = f"school-erp-{state.lower().replace(' ','-')}"
+    slug  = f"school-erp-{_slugify_text(state)}"
     canonical = _page_url(slug, s)
 
     city_links = "".join(f'<li><a href="{_page_url(c[1], s)}">School ERP Software in {c[0]}</a></li>' for c in cities_data[:30])
     schema = json.dumps({
         "@context":"https://schema.org",
-        "@type":"CollectionPage",
-        "name":f"School ERP Software in {state} | {brand}",
-        "url":canonical,
-        "description":f"TACHY School ERP Software serving all major cities in {state}. {sd['board']} compatible. Free demo.",
+        "@graph":[
+            {
+                "@type":"CollectionPage",
+                "name":f"School ERP Software in {state} | {brand}",
+                "url":canonical,
+                "description":f"TACHY School ERP Software serving all major cities in {state}. {sd['board']} compatible. Free demo.",
+            },
+            _org_schema(s)
+        ]
     })
 
     return f"""<!doctype html>
@@ -1356,7 +1567,7 @@ a{{color:#4f46e5}}ul{{columns:3;list-style:none;padding:0;gap:20px}}li{{padding:
 <div class="info-box">
  <strong>📋 {state} Education Board:</strong> {sd['board']}<br/>
  <strong>🏫 Schools in {state}:</strong> {sd['schools']}<br/>
- <strong>📞 For {state} Schools:</strong> <a href="tel:{phone}">{phone}</a>
+ <strong>📞 For {state} Schools:</strong> <a href="tel:{tel_phone}">{phone}</a>
 </div>
 <h2>TACHY School ERP — {state} Cities</h2>
 <ul>{city_links}</ul>
@@ -1364,7 +1575,7 @@ a{{color:#4f46e5}}ul{{columns:3;list-style:none;padding:0;gap:20px}}li{{padding:
 <p>Schools across {state} face unique challenges — multiple board affiliations, rural connectivity constraints, and diverse fee structures. TACHY School ERP was built with these realities in mind. Our platform supports all formats required by {sd['board']}, provides offline-capable mobile apps, and comes with a dedicated support team that understands {state}'s school ecosystem.</p>
 <p>From Tier-1 cities to smaller towns across {state}, TACHY delivers the same powerful, affordable, and easy-to-implement school management platform. Implementation takes 3–7 days, and our team handles all data migration and training.</p>
 <h2>Get TACHY School ERP for Your {state} School</h2>
-<p>Call <a href="tel:{phone}">{phone}</a> or <a href="{website}/leadform.php">book your free demo online</a>. Our {state} implementation team will contact you within 24 hours.</p>
+<p>Call <a href="tel:{tel_phone}">{phone}</a> or <a href="{website}/leadform.php">book your free demo online</a>. Our {state} implementation team will contact you within 24 hours.</p>
 <p style="color:#64748b;font-size:13px;margin-top:40px">© {yr} {brand}. School ERP Software for {state} — Serving all cities.</p>
 </body></html>"""
 
@@ -1412,6 +1623,8 @@ Sitemap: {cfg('website')}/sitemap.xml
 
 def generate_index_html(output_dir):
     s = _s()
+    phone = s.get('phone','')
+    tel_phone = phone.replace(" ", "").replace("-", "")
     conn = sqlite3.connect(DB_PATH)
     rows = conn.execute("""SELECT c.city_name, c.state_name, c.country, gp.slug, gp.seo_score
                            FROM generated_pages gp JOIN cities c ON c.id=gp.city_id
@@ -1448,7 +1661,7 @@ ul{{columns:4;list-style:none;padding:0;column-gap:20px}}li{{padding:3px 0;font-
 <h1>⚡ {s.get('brand','')} — School ERP Software Across India & World</h1>
 <p>Find dedicated school ERP information for your city. <strong>{len(rows)} cities covered</strong> across India and internationally.</p>
 {sections}
-<p style="margin-top:32px;color:#64748b">📞 <a href="tel:{s.get('phone','')}">{s.get('phone','')}</a> | 🌐 <a href="{s.get('website','')}">tachy.in</a></p>
+<p style="margin-top:32px;color:#64748b">📞 <a href="tel:{tel_phone}">{phone}</a> | 🌐 <a href="{s.get('website','')}">tachy.in</a></p>
 </body></html>"""
     path = os.path.join(output_dir, "school-erp-india.html")
     with open(path, "w", encoding="utf-8") as f:
@@ -1459,6 +1672,8 @@ def generate_blog_page(city, state, template_key, output_dir):
     tpl = BLOG_TEMPLATES[template_key]
     yr = str(datetime.now().year)
     s = _s()
+    phone = s.get('phone','')
+    tel_phone = phone.replace(" ", "").replace("-", "")
     slug = f"blog-{city.lower().replace(' ','-')}-{template_key}"
     title = tpl["title"].replace("{city}",city).replace("{state}",state).replace("{year}",yr)
     meta = tpl["meta"].replace("{city}",city).replace("{state}",state)
@@ -1473,10 +1688,13 @@ def generate_blog_page(city, state, template_key, output_dir):
                 f"to your {city} school's specific requirements.")
         sections_html += f"<h2>{h}</h2><p>{body}</p>\n"
 
-    schema = json.dumps({"@context":"https://schema.org","@type":"Article",
-                          "headline":title,"author":{"@type":"Organization","name":s.get('brand','')},
-                          "publisher":{"@type":"Organization","name":s.get('brand','')},
-                          "datePublished":datetime.now().strftime("%Y-%m-%d")})
+    schema = json.dumps({"@context":"https://schema.org","@graph":[
+                          {"@type":"Article",
+                           "headline":title,"author":{"@type":"Organization","name":s.get('brand','')},
+                           "publisher":{"@type":"Organization","name":s.get('brand','')},
+                           "datePublished":datetime.now().strftime("%Y-%m-%d")},
+                          _org_schema(s)
+                          ]})
     html = f"""<!doctype html><html lang="en-IN"><head>
 <meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>{title}</title><meta name="description" content="{meta}"/>
@@ -1490,7 +1708,7 @@ h1{{color:#4f46e5;font-size:1.9rem}}h2{{color:#334155;margin-top:32px}}a{{color:
 <h1>{title}</h1>
 <p><strong>Published:</strong> {datetime.now().strftime('%B %d, %Y')} | <strong>By:</strong> {s.get('brand','')} Team | <strong>City:</strong> {city}, {state}</p>
 {sections_html}
-<hr/><p>Ready to transform your school in {city}? <a href="{s.get('website','')}/leadform.php">Book a free demo</a> or call <a href="tel:{s.get('phone','')}">{s.get('phone','')}</a>.</p>
+<hr/><p>Ready to transform your school in {city}? <a href="{s.get('website','')}/leadform.php">Book a free demo</a> or call <a href="tel:{tel_phone}">{phone}</a>.</p>
 </body></html>"""
     os.makedirs(output_dir, exist_ok=True)
     path = os.path.join(output_dir, slug+".html")
@@ -1500,12 +1718,17 @@ h1{{color:#4f46e5;font-size:1.9rem}}h2{{color:#334155;margin-top:32px}}a{{color:
 
 def generate_module_page(slug, title, subtitle, keywords, output_dir):
     s = _s()
+    phone = s.get('phone','')
+    tel_phone = phone.replace(" ", "").replace("-", "")
     yr = datetime.now().year
     meta = f"{title} by {s.get('brand','TACHY SCHOOL ERP')}. {subtitle} for Indian schools. Free demo available."
-    schema = json.dumps({"@context":"https://schema.org","@type":"SoftwareApplication",
-                          "name":title,"applicationCategory":"BusinessApplication",
-                          "offers":{"@type":"Offer","priceCurrency":"INR"},
-                          "aggregateRating":{"@type":"AggregateRating","ratingValue":"4.8","reviewCount":"89"}})
+    schema = json.dumps({"@context":"https://schema.org","@graph":[
+                          {"@type":"SoftwareApplication",
+                           "name":title,"applicationCategory":"BusinessApplication",
+                           "offers":{"@type":"Offer","priceCurrency":"INR"},
+                           "aggregateRating":{"@type":"AggregateRating","ratingValue":"4.8","reviewCount":"89"}},
+                          _org_schema(s)
+                          ]})
     html = f"""<!doctype html><html lang="en-IN"><head>
 <meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>{title} | {s.get('brand','TACHY SCHOOL ERP')}</title>
@@ -1532,7 +1755,7 @@ h1{{color:#4f46e5;font-size:2rem}}h2{{color:#334155;margin-top:28px}}a{{color:#4
 <h2>Schools Using This Module Say...</h2>
 <p>★★★★★ "The {subtitle.lower()} completely transformed how we operate. What used to take 3 days now takes 3 hours." — Principal, CBSE School, Bihar</p>
 <h2>Get Started Today</h2>
-<p>Call <a href="tel:{s.get('phone','')}">{s.get('phone','')}</a> or <a href="{s.get('website','')}/leadform.php">book your free demo now</a>.</p>
+<p>Call <a href="tel:{tel_phone}">{phone}</a> or <a href="{s.get('website','')}/leadform.php">book your free demo now</a>.</p>
 <p style="font-size:13px;color:#94a3b8;margin-top:32px">© {yr} {s.get('brand','')}</p>
 </body></html>"""
     os.makedirs(output_dir, exist_ok=True)
@@ -2294,19 +2517,27 @@ class App(tk.Tk):
                 self._ui(self._bulk_log_append, f"Generating: {city}, {state}, {country}...")
 
                 try:
-                    path, wc, score, meta = generate_city_page(
-                        city, state, od, country, is_intl, variation_seed=i
-                    )
                     slug = city.lower().replace(" ","-") + ("-indian-school-erp" if is_intl else "-school-erp")
 
                     # Per-thread DB connection — NO sharing across threads
                     db_conn = sqlite3.connect(DB_PATH)
                     db_conn.execute("PRAGMA journal_mode=WAL")
-                    db_conn.execute("DELETE FROM generated_pages WHERE city_id=?", (cid,))
-                    db_conn.execute(
-                        "INSERT INTO generated_pages(city_id,page_type,slug,file_path,word_count,seo_score) VALUES(?,?,?,?,?,?)",
-                        (cid, "city", slug, path, wc, score)
+                    existing = db_conn.execute("SELECT first_generated_at FROM generated_pages WHERE slug=?", (slug,)).fetchone()
+                    first_pub_date = existing[0] if existing and existing[0] else datetime.now().strftime("%Y-%m-%d")
+
+                    path, wc, score, meta, first_pub_date = generate_city_page(
+                        city, state, od, country, is_intl, variation_seed=i, first_pub_date=first_pub_date
                     )
+
+                    db_conn.execute("""
+                        INSERT INTO generated_pages(city_id,page_type,slug,file_path,word_count,seo_score,first_generated_at)
+                        VALUES(?,?,?,?,?,?,?)
+                        ON CONFLICT(slug) DO UPDATE SET
+                            file_path=excluded.file_path,
+                            word_count=excluded.word_count,
+                            seo_score=excluded.seo_score,
+                            generated_at=CURRENT_TIMESTAMP
+                    """, (cid, "city", slug, path, wc, score, first_pub_date))
                     db_conn.commit()
                     db_conn.close()
 
@@ -2360,11 +2591,19 @@ class App(tk.Tk):
                 conn.commit()
                 cid = conn.execute("SELECT id FROM cities WHERE city_name=? AND state_name=?",(city,state)).fetchone()[0]
                 conn.close()
-                path, wc, score, meta = generate_city_page(city, state, od, ctry, is_intl, var)
+                path, wc, score, meta, first_pub_date = generate_city_page(city, state, od, ctry, is_intl, var)
                 conn = sqlite3.connect(DB_PATH)
-                conn.execute("DELETE FROM generated_pages WHERE city_id=?", (cid,))
-                conn.execute("INSERT INTO generated_pages(city_id,page_type,slug,file_path,word_count,seo_score) VALUES(?,?,?,?,?,?)",
-                             (cid,"city",slug,path,wc,score))
+                existing = conn.execute("SELECT first_generated_at FROM generated_pages WHERE slug=?", (slug,)).fetchone()
+                first_pub_date = existing[0] if existing and existing[0] else first_pub_date
+                conn.execute("""
+                    INSERT INTO generated_pages(city_id,page_type,slug,file_path,word_count,seo_score,first_generated_at)
+                    VALUES(?,?,?,?,?,?,?)
+                    ON CONFLICT(slug) DO UPDATE SET
+                        file_path=excluded.file_path,
+                        word_count=excluded.word_count,
+                        seo_score=excluded.seo_score,
+                        generated_at=CURRENT_TIMESTAMP
+                """, (cid,"city",slug,path,wc,score,first_pub_date))
                 conn.commit(); conn.close()
                 def upd():
                     self._sout.insert("end", f"✅  File: {path}\n")
@@ -2432,7 +2671,7 @@ class App(tk.Tk):
         count = 0
         for state, cities in states.items():
             html = generate_state_hub_html(state, cities)
-            fname = f"school-erp-{state.lower().replace(' ','-')}.html"
+            fname = f"school-erp-{_slugify_text(state)}.html"
             path = os.path.join(od, fname)
             os.makedirs(od, exist_ok=True)
             with open(path, "w", encoding="utf-8") as f:
@@ -3064,6 +3303,13 @@ https://tachy.in | +91 8434801033
             ("Base City","base_city"),("Base State","base_state"),
             # SEO subfolder — CRITICAL for tachy.in/seo/ deployment
             ("SEO Subfolder Path (e.g. seo)","seo_base_path"),
+            ("YouTube Demo Video ID", "demo_video_id"),
+            ("OG Share Image Path", "og_image"),
+            ("Live Review Count (from G2/SoftwareSuggest)", "review_count"),
+            ("Average Rating Score (e.g. 4.8)", "rating_value"),
+            ("SoftwareSuggest URL", "softwaresuggest_url"),
+            ("G2 Profile URL", "g2_url"),
+            ("Capterra URL", "capterra_url"),
         ]
         for i, (lbl, key) in enumerate(fields, 1):
             tk.Label(inner, text=lbl, bg="#060b18", fg="#a0b4d4",
