@@ -1,0 +1,19 @@
+{
+  "slug": "patna-school-erp",
+  "publish_status": "manual_review",
+  "quality_score": 100,
+  "publish_safety_status": "manual_review",
+  "issue_codes": [
+    "missing_verified_testimonial",
+    "risky_superlative_claim",
+    "unsupported_rating_claim",
+    "unsupported_schema_type:SpeakableSpecification",
+    "unverified_testimonial"
+  ],
+  "claim_status": "unsupported_stat",
+  "video_status": "not_present",
+  "business_entity_status": "safe",
+  "testimonial_status": "fallback",
+  "outdated_meta_status": "clean",
+  "schema_status": "invalid"
+}

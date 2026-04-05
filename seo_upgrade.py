@@ -44,6 +44,52 @@ KEYWORD_BUCKETS = {
     "demo_cta_intent": ["free school erp demo india"],
 }
 
+SUPPORTED_SCHEMA_TYPES = {
+    "Organization", "LocalBusiness", "SoftwareApplication", "FAQPage", "BreadcrumbList", "WebPage",
+    "Product", "VideoObject", "HowTo", "Article", "CollectionPage", "Service",
+}
+OUTDATED_META_PATTERNS = [
+    re.compile(r'<meta[^>]+name=["\']keywords["\'][^>]*>', re.I),
+    re.compile(r'<meta[^>]+name=["\']revisit-after["\'][^>]*>', re.I),
+    re.compile(r'<meta[^>]+name=["\']rating["\'][^>]*>', re.I),
+]
+CLAIM_RULES = {
+    "risky_superlative_claim": [
+        (re.compile(r"\b#\s*1\b", re.I), "leading"),
+        (re.compile(r"\bbest\b", re.I), "trusted"),
+        (re.compile(r"\bmost trusted\b", re.I), "widely used"),
+    ],
+    "unsupported_stat": [
+        (re.compile(r"\b500\+\s*schools\b", re.I), "schools across India"),
+        (re.compile(r"\b20\+\s*states\b", re.I), "multiple regions"),
+        (re.compile(r"\b95%\+\b", re.I), "high engagement"),
+        (re.compile(r"\bgo live in 3[–-]7 days\b", re.I), "go live based on setup"),
+        (re.compile(r"\btrained in under 4 hours\b", re.I), "training is guided step-by-step"),
+        (re.compile(r"\bsave 3[–-]5 hours daily\b", re.I), "save administration effort"),
+    ],
+}
+
+
+@dataclass
+class YouTubeData:
+    video_id: str
+    watch_url: str
+    embed_url: str
+    thumbnail_url: str
+
+
+@dataclass
+class PublishSafetyResult:
+    publish_safety_status: str
+    issue_codes: List[str]
+    claim_status: str
+    video_status: str
+    business_entity_status: str
+    testimonial_status: str
+    outdated_meta_status: str
+    schema_status: str
+    rewritten_html: str
+
 
 def normalize_text(value: str) -> str:
     value = unicodedata.normalize("NFKD", value or "")
@@ -167,6 +213,150 @@ def parse_schema_blocks(html_doc: str) -> Tuple[bool, List[str]]:
     return len(errors) == 0, errors
 
 
+def _iter_schema_nodes(block_json):
+    if isinstance(block_json, dict):
+        if "@graph" in block_json and isinstance(block_json["@graph"], list):
+            for node in block_json["@graph"]:
+                if isinstance(node, dict):
+                    yield node
+        else:
+            yield block_json
+    elif isinstance(block_json, list):
+        for item in block_json:
+            if isinstance(item, dict):
+                yield item
+
+
+def validate_schema_semantics(html_doc: str, proof_mode: str = "neutral") -> Tuple[bool, List[str]]:
+    errors: List[str] = []
+    seen_ids = set()
+    blocks = re.findall(r'<script[^>]+application/ld\+json[^>]*>([\s\S]*?)</script>', html_doc, flags=re.I)
+    if not blocks:
+        return False, ["schema_missing"]
+    for idx, block in enumerate(blocks, start=1):
+        try:
+            parsed = json.loads(block.strip())
+        except Exception as exc:
+            errors.append(f"schema_json_invalid_{idx}:{exc}")
+            continue
+        for node in _iter_schema_nodes(parsed):
+            node_type = node.get("@type")
+            node_id = node.get("@id")
+            if node_id:
+                if node_id in seen_ids:
+                    errors.append("duplicate_schema_id")
+                seen_ids.add(node_id)
+            if node_type and node_type not in SUPPORTED_SCHEMA_TYPES:
+                errors.append(f"unsupported_schema_type:{node_type}")
+            for key in ("url", "contentUrl", "embedUrl"):
+                if key in node and not str(node.get(key, "")).startswith(("http://", "https://")):
+                    errors.append(f"invalid_url:{key}")
+            for date_key in ("datePublished", "dateModified", "uploadDate"):
+                if date_key in node and not re.match(r"^\d{4}-\d{2}-\d{2}", str(node.get(date_key, ""))):
+                    errors.append(f"invalid_date:{date_key}")
+            if node_type == "AggregateRating" and proof_mode != "verified":
+                errors.append("aggregate_rating_without_verified_proof")
+            if node_type == "VideoObject":
+                if not node.get("embedUrl") or "youtube.com/embed/" not in str(node.get("embedUrl")):
+                    errors.append("invalid_video_embed")
+    return (len(errors) == 0), sorted(set(errors))
+
+
+def parse_youtube_input(value: str) -> YouTubeData | None:
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    patterns = [
+        re.compile(r"^[A-Za-z0-9_-]{11}$"),
+        re.compile(r"(?:v=|\/shorts\/|\/embed\/|youtu\.be\/)([A-Za-z0-9_-]{11})"),
+    ]
+    video_id = ""
+    if patterns[0].match(raw):
+        video_id = raw
+    else:
+        for pat in patterns[1:]:
+            m = pat.search(raw)
+            if m:
+                video_id = m.group(1)
+                break
+    if not video_id:
+        return None
+    return YouTubeData(
+        video_id=video_id,
+        watch_url=f"https://www.youtube.com/watch?v={video_id}",
+        embed_url=f"https://www.youtube.com/embed/{video_id}",
+        thumbnail_url=f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg",
+    )
+
+
+def detect_outdated_meta(html_doc: str) -> List[str]:
+    hits = []
+    for pat in OUTDATED_META_PATTERNS:
+        if pat.search(html_doc):
+            hits.append("outdated_meta_tags")
+    return sorted(set(hits))
+
+
+def remove_outdated_meta(html_doc: str) -> str:
+    updated = html_doc
+    for pat in OUTDATED_META_PATTERNS:
+        updated = pat.sub("", updated)
+    return updated
+
+
+def validate_testimonials(testimonials: list, freshness_days: int = 180) -> Tuple[bool, List[str]]:
+    issues = []
+    if not testimonials:
+        return False, ["missing_verified_testimonial"]
+    cutoff = datetime.utcnow() - timedelta(days=freshness_days)
+    valid_count = 0
+    for row in testimonials:
+        quote = str(row[3]).strip() if len(row) > 3 else ""
+        verification_date = str(row[5]).strip() if len(row) > 5 else ""
+        if len(quote.split()) < 8:
+            issues.append("testimonial_quote_too_short")
+            continue
+        try:
+            if datetime.strptime(verification_date, "%Y-%m-%d") < cutoff:
+                issues.append("stale_proof_data")
+                continue
+        except Exception:
+            issues.append("testimonial_missing_verification_date")
+            continue
+        valid_count += 1
+    if valid_count == 0:
+        issues.append("unverified_testimonial")
+    return valid_count > 0, sorted(set(issues))
+
+
+def claim_policy_rewrite(html_doc: str, proof_mode: str = "neutral") -> Tuple[str, List[str], str]:
+    issues: List[str] = []
+    updated = html_doc
+    if proof_mode == "verified":
+        return updated, issues, "verified_numeric_claim"
+    for group, patterns in CLAIM_RULES.items():
+        for pat, replacement in patterns:
+            if pat.search(updated):
+                issues.append(group)
+                updated = pat.sub(replacement, updated)
+    if re.search(r"\b\d+(\.\d+)?\s*★", updated):
+        updated = re.sub(r"\b\d+(\.\d+)?\s*★", "highly rated", updated)
+        issues.append("unsupported_rating_claim")
+    return updated, sorted(set(issues)), ("soft_marketing_claim" if not issues else "unsupported_stat")
+
+
+def evaluate_business_entity_mode(html_doc: str, city: str, config: Dict[str, str]) -> Tuple[str, List[str]]:
+    has_local = "localbusiness" in html_doc.lower()
+    has_office_flag = str(config.get("has_physical_office_in_city", "0")) == "1"
+    service_area_mode = str(config.get("use_service_area_business_mode", "1")) == "1"
+    primary_city = str(config.get("primary_business_city", "")).strip().lower()
+    issues = []
+    if has_local and not has_office_flag and city.strip().lower() != primary_city and not service_area_mode:
+        issues.append("misleading_localbusiness")
+        return "manual_review", issues
+    return "safe", issues
+
+
 @dataclass
 class QualityGateResult:
     quality_score: int
@@ -260,6 +450,79 @@ def apply_noindex_if_needed(html_doc: str, publish_status: str) -> str:
     if 'name="robots"' in html_doc.lower():
         return re.sub(r'<meta\s+name=["\']robots["\'][^>]*>', '<meta name="robots" content="noindex,nofollow"/>', html_doc, flags=re.I)
     return html_doc.replace("</head>", "  <meta name=\"robots\" content=\"noindex,nofollow\"/>\n</head>")
+
+
+def run_publish_safety_validator(
+    html_doc: str,
+    city: str,
+    config: Dict[str, str],
+    proof_mode: str,
+    testimonials: list,
+) -> PublishSafetyResult:
+    working_html = html_doc
+    issues: List[str] = []
+
+    # Claim governance + rewrite
+    rewritten_html, claim_issues, claim_status = claim_policy_rewrite(working_html, proof_mode=proof_mode)
+    working_html = rewritten_html
+    issues.extend(claim_issues)
+
+    # Video safety
+    video_status = "not_present"
+    if "videoobject" in working_html.lower():
+        parsed_video = parse_youtube_input(config.get("demo_video_id", ""))
+        if not parsed_video:
+            video_status = "invalid"
+            issues.append("invalid_video_url")
+            working_html = re.sub(r'<script[^>]+application/ld\+json[^>]*>[\s\S]*?VideoObject[\s\S]*?</script>', "", working_html, flags=re.I)
+        else:
+            video_status = "valid"
+            working_html = re.sub(r"https?://(?:www\.)?youtube\.com/watch\?v=[A-Za-z0-9_-]{11}", parsed_video.watch_url, working_html)
+            working_html = re.sub(r"https?://(?:www\.)?youtube\.com/embed/[A-Za-z0-9_-]{11}", parsed_video.embed_url, working_html)
+            working_html = re.sub(r"https?://i\.ytimg\.com/vi/[A-Za-z0-9_-]{11}/hqdefault\.jpg", parsed_video.thumbnail_url, working_html)
+
+    # Testimonials
+    testimonial_ok, testimonial_issues = validate_testimonials(testimonials, freshness_days=int(config.get("proof_freshness_days", "180") or "180"))
+    testimonial_status = "verified" if testimonial_ok else "fallback"
+    issues.extend(testimonial_issues)
+    if not testimonial_ok:
+        issues.append("unverified_testimonial")
+        # Remove fabricated review schema blocks
+        working_html = re.sub(r'<script[^>]+application/ld\+json[^>]*>[\s\S]*?AggregateRating[\s\S]*?</script>', "", working_html, flags=re.I)
+
+    # Outdated meta
+    outdated_meta_issues = detect_outdated_meta(working_html)
+    outdated_meta_status = "clean"
+    if outdated_meta_issues and str(config.get("enable_legacy_meta_tags", "0")) != "1":
+        working_html = remove_outdated_meta(working_html)
+        outdated_meta_status = "removed"
+        issues.extend(outdated_meta_issues)
+
+    # Business entity safety
+    business_status, business_issues = evaluate_business_entity_mode(working_html, city, config)
+    issues.extend(business_issues)
+
+    # Schema semantics
+    schema_ok, schema_errors = validate_schema_semantics(working_html, proof_mode=proof_mode)
+    schema_status = "valid" if schema_ok else "invalid"
+    issues.extend(schema_errors)
+
+    publish_safety_status = "safe"
+    if issues or schema_status == "invalid" or business_status != "safe":
+        publish_safety_status = "manual_review"
+        working_html = apply_noindex_if_needed(working_html, "manual_review")
+
+    return PublishSafetyResult(
+        publish_safety_status=publish_safety_status,
+        issue_codes=sorted(set(issues)),
+        claim_status=claim_status,
+        video_status=video_status,
+        business_entity_status=business_status,
+        testimonial_status=testimonial_status,
+        outdated_meta_status=outdated_meta_status,
+        schema_status=schema_status,
+        rewritten_html=working_html,
+    )
 
 
 def proof_mode_context(db_path: str, city: str, state: str, freshness_days: int = 180) -> Dict[str, object]:
