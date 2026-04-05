@@ -36,6 +36,17 @@ import sqlite3, os, json, threading, webbrowser, re, random, time, queue, zipfil
 from datetime import datetime, timedelta
 import http.server, socketserver, socket, urllib.parse
 import io
+from seo_upgrade import (
+    BLOCKED_LOCATION_TERMS,
+    KEYWORD_BUCKETS,
+    apply_noindex_if_needed,
+    parse_youtube_input,
+    proof_mode_context,
+    run_publish_safety_validator,
+    run_quality_gate,
+    sanitize_slug,
+    validate_location_row,
+)
 
 # ══════════════════════════════════════════════════════════════════════
 #  PATHS & CONFIG
@@ -412,6 +423,77 @@ def init_db():
         url TEXT,
         checked_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
+    CREATE TABLE IF NOT EXISTS page_qc (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        slug TEXT NOT NULL,
+        page_type TEXT DEFAULT 'city',
+        content_hash TEXT DEFAULT '',
+        similarity_score REAL DEFAULT 0,
+        thin_content INTEGER DEFAULT 0,
+        quality_score INTEGER DEFAULT 0,
+        publish_status TEXT DEFAULT 'manual_review',
+        schema_status TEXT DEFAULT 'invalid',
+        image_status TEXT DEFAULT 'fallback_used',
+        proof_status TEXT DEFAULT 'neutral',
+        claim_status TEXT DEFAULT 'unsupported_stat',
+        video_status TEXT DEFAULT 'not_present',
+        business_entity_status TEXT DEFAULT 'safe',
+        testimonial_status TEXT DEFAULT 'fallback',
+        outdated_meta_status TEXT DEFAULT 'clean',
+        publish_safety_status TEXT DEFAULT 'manual_review',
+        reason_codes TEXT DEFAULT '[]',
+        visible_text TEXT DEFAULT '',
+        review_state TEXT DEFAULT 'manual_review',
+        keyword_bucket_map TEXT DEFAULT '{}',
+        language_variant TEXT DEFAULT 'en-IN',
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS import_reviews (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        city_name TEXT,
+        state_name TEXT,
+        country TEXT,
+        slug TEXT,
+        review_state TEXT DEFAULT 'manual_review',
+        reason_codes TEXT DEFAULT '[]',
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS proof_sources (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        city TEXT,
+        state TEXT,
+        platform_name TEXT NOT NULL,
+        rating REAL,
+        review_count INTEGER,
+        source_url TEXT,
+        verification_date TEXT,
+        is_verified INTEGER DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS testimonials (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        city TEXT,
+        state TEXT,
+        person_name TEXT NOT NULL,
+        role TEXT,
+        school_name TEXT,
+        quote TEXT NOT NULL,
+        source_url TEXT,
+        verification_date TEXT,
+        is_verified INTEGER DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS publish_safety_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        slug TEXT NOT NULL,
+        publish_safety_status TEXT DEFAULT 'manual_review',
+        issue_codes TEXT DEFAULT '[]',
+        claim_status TEXT DEFAULT 'unsupported_stat',
+        video_status TEXT DEFAULT 'not_present',
+        business_entity_status TEXT DEFAULT 'safe',
+        testimonial_status TEXT DEFAULT 'fallback',
+        outdated_meta_status TEXT DEFAULT 'clean',
+        schema_status TEXT DEFAULT 'invalid',
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    );
     """)
 
     defaults = {
@@ -433,6 +515,18 @@ def init_db():
         "softwaresuggest_url":"",
         "g2_url":"",
         "capterra_url":"",
+        "min_word_count":"1100",
+        "similarity_threshold":"0.78",
+        "quality_gate_threshold":"75",
+        "proof_freshness_days":"180",
+        "enable_hindi_pages":"0",
+        "publish_manifest":"publish_manifest.json",
+        "has_physical_office_in_city":"0",
+        "use_service_area_business_mode":"1",
+        "primary_business_city":"Katihar",
+        "enable_legacy_meta_tags":"0",
+        "youtube_upload_date":"",
+        "youtube_duration":"PT2M30S",
     }
     for k, v in defaults.items():
         c.execute("INSERT OR IGNORE INTO settings VALUES(?,?)", (k, v))
@@ -442,6 +536,41 @@ def init_db():
     if "first_generated_at" not in gp_cols:
         c.execute("ALTER TABLE generated_pages ADD COLUMN first_generated_at TEXT")
         c.execute("UPDATE generated_pages SET first_generated_at = COALESCE(first_generated_at, generated_at)")
+    for add_col, add_type in [
+        ("quality_score", "INTEGER DEFAULT 0"),
+        ("publish_status", "TEXT DEFAULT 'manual_review'"),
+        ("schema_status", "TEXT DEFAULT 'invalid'"),
+        ("similarity_score", "REAL DEFAULT 0"),
+        ("proof_status", "TEXT DEFAULT 'neutral'"),
+        ("image_status", "TEXT DEFAULT 'fallback_used'"),
+        ("review_state", "TEXT DEFAULT 'manual_review'"),
+        ("language_variant", "TEXT DEFAULT 'en-IN'"),
+        ("keyword_bucket_map", "TEXT DEFAULT '{}'"),
+        ("claim_status", "TEXT DEFAULT 'unsupported_stat'"),
+        ("video_status", "TEXT DEFAULT 'not_present'"),
+        ("business_entity_status", "TEXT DEFAULT 'safe'"),
+        ("testimonial_status", "TEXT DEFAULT 'fallback'"),
+        ("outdated_meta_status", "TEXT DEFAULT 'clean'"),
+        ("publish_safety_status", "TEXT DEFAULT 'manual_review'")
+    ]:
+        if add_col not in gp_cols:
+            c.execute(f"ALTER TABLE generated_pages ADD COLUMN {add_col} {add_type}")
+    city_cols = [r[1] for r in c.execute("PRAGMA table_info(cities)").fetchall()]
+    if "review_state" not in city_cols:
+        c.execute("ALTER TABLE cities ADD COLUMN review_state TEXT DEFAULT 'publish_ready'")
+    if "validation_notes" not in city_cols:
+        c.execute("ALTER TABLE cities ADD COLUMN validation_notes TEXT DEFAULT '[]'")
+    pq_cols = [r[1] for r in c.execute("PRAGMA table_info(page_qc)").fetchall()]
+    for add_col, add_type in [
+        ("claim_status", "TEXT DEFAULT 'unsupported_stat'"),
+        ("video_status", "TEXT DEFAULT 'not_present'"),
+        ("business_entity_status", "TEXT DEFAULT 'safe'"),
+        ("testimonial_status", "TEXT DEFAULT 'fallback'"),
+        ("outdated_meta_status", "TEXT DEFAULT 'clean'"),
+        ("publish_safety_status", "TEXT DEFAULT 'manual_review'"),
+    ]:
+        if add_col not in pq_cols:
+            c.execute(f"ALTER TABLE page_qc ADD COLUMN {add_col} {add_type}")
 
 
     # 200+ Indian cities
@@ -705,7 +834,8 @@ def _vary(pool, city, state, cf=None):
     return result
 
 def _city_facts(city):
-    return CITY_FACTS.get(city, CITY_FACTS["DEFAULT"])
+    # Safety-first: avoid presenting unverified numeric city claims in landing pages.
+    return {"pop":"growing", "schools":"many", "boards":"CBSE, ICSE, State Board", "note":"regional education center"}
 
 def _state_data(state):
     return STATE_DATA.get(state, STATE_DATA["DEFAULT"])
@@ -801,7 +931,7 @@ def generate_city_html(city, state, country="India", is_international=False, var
         "Delhi":"दिल्ली","Uttarakhand":"उत्तराखंड"
     }
     yr  = datetime.now().year
-    slug = city.lower().replace(" ","-") + ("-indian-school-erp" if is_international else "-school-erp")
+    slug = sanitize_slug(city) + ("-indian-school-erp" if is_international else "-school-erp")
     canonical = _page_url(slug, s)
     website = s.get('website','https://tachy.in')
     phone = s.get('phone','+91 8434801033')
@@ -812,9 +942,14 @@ def generate_city_html(city, state, country="India", is_international=False, var
     short = s.get('short','TACHY')
     ga = s.get('ga','')
     og_image = s.get('og_image', '/assets/og-tachy-school-erp.jpg')
-    video_id = s.get('demo_video_id', '').strip()
-    rating_val = s.get('rating_value', '4.8')
-    review_cnt = int(s.get('review_count', '0') or '0')
+    video_info = parse_youtube_input(s.get('demo_video_id', '').strip())
+    video_id = video_info.video_id if video_info else ""
+    proof_ctx = proof_mode_context(DB_PATH, city, state, freshness_days=int(s.get("proof_freshness_days", "180") or "180"))
+    rating_val = None
+    review_cnt = 0
+    if proof_ctx.get("mode") == "verified" and proof_ctx.get("aggregate_rating"):
+        rating_val = str(proof_ctx["aggregate_rating"].get("rating", ""))
+        review_cnt = int(proof_ctx["aggregate_rating"].get("review_count", 0) or 0)
 
     # Unique per-city content
     hero_intro    = _vary(HERO_INTROS, city, state, cf)
@@ -822,7 +957,13 @@ def generate_city_html(city, state, country="India", is_international=False, var
     opening_para  = _vary(OPENING_PARAS, city, state, cf)
     city_para     = _vary(CITY_SPECIFIC_PARAS, city, state, cf)
     closing_para  = _vary(CLOSING_PARAS, city, state, cf)
-    testi_picks   = random.sample(TESTIMONIALS_POOL, min(3, len(TESTIMONIALS_POOL)))
+    if proof_ctx.get("mode") == "verified" and proof_ctx.get("testimonials"):
+        testi_picks = [
+            (t[0], t[1] or "School Leader", t[2] or "Verified School", t[3])
+            for t in proof_ctx.get("testimonials", [])
+        ]
+    else:
+        testi_picks = []
     faq_picks     = random.sample(FAQS_POOL, 6)
     answer_block = (random.choice(ANSWER_BLOCKS).replace("{{city}}", city).replace("{{state}}", state).replace("{{board}}", board_short))
 
@@ -868,6 +1009,12 @@ def generate_city_html(city, state, country="India", is_international=False, var
     def faq_html(q, a):
         q2 = q.replace("{city}",city).replace("{state}",state)
         a2 = a.replace("{city}",city).replace("{state}",state)
+        if proof_ctx.get("mode") != "verified":
+            a2 = re.sub(r"\b\d+[–-]?\d*\s*(days?|hours?|%|\+)\b", "typically, depending on setup", a2, flags=re.I)
+            a2 = a2.replace("save", "improve")
+            a2 = a2.replace("Go live in 3-7 days", "Go live based on school readiness")
+            if "Contact us" not in a2:
+                a2 += " Timelines and outcomes vary by school size and selected modules."
         return (f'<div class="faq-item" itemscope itemprop="mainEntity" itemtype="https://schema.org/Question">'
                 f'<button class="faq-q" onclick="tFaq(this)" itemprop="name">{q2}<span class="farrow">▼</span></button>'
                 f'<div class="faq-a" itemscope itemprop="acceptedAnswer" itemtype="https://schema.org/Answer">'
@@ -893,13 +1040,16 @@ def generate_city_html(city, state, country="India", is_international=False, var
     # ── Testimonials ──────────────────────────────────────────
     def testi_card(name, role, school, quote):
         return (f'<div class="tcard" itemscope itemtype="https://schema.org/Review">'
-                f'<div class="tstars" itemprop="reviewRating" itemscope itemtype="https://schema.org/Rating">'
-                f'<meta itemprop="ratingValue" content="5"/>★★★★★</div>'
                 f'<p class="tquote" itemprop="reviewBody">"{quote}"</p>'
                 f'<div class="tauthor" itemprop="author" itemscope itemtype="https://schema.org/Person">'
                 f'<b itemprop="name">{name}</b><span>{role}, {school}</span></div></div>')
 
     testis_html_str = "\n".join(testi_card(nm,rl,sc,qt) for nm,rl,sc,qt in testi_picks)
+    testimonials_block = testis_html_str or (
+        '<div class="tcard"><p class="tquote">Implementation, onboarding, and support quality are discussed '
+        'transparently during your personalized demo and proposal.</p>'
+        '<div class="tauthor"><b>TACHY Implementation Team</b><span>Verified process guidance</span></div></div>'
+    )
 
     # ── Related cities ─────────────────────────────────────────
     related_html = _related_cities_html(city, state, s)
@@ -912,7 +1062,7 @@ def generate_city_html(city, state, country="India", is_international=False, var
         "operatingSystem": "Web Browser, Android",
         "offers": {"@type": "Offer", "priceCurrency": "INR", "availability": "https://schema.org/InStock"},
     }
-    if review_cnt > 0:
+    if review_cnt > 0 and rating_val:
         software_entry["aggregateRating"] = {
             "@type": "AggregateRating",
             "ratingValue": rating_val,
@@ -943,10 +1093,8 @@ def generate_city_html(city, state, country="India", is_international=False, var
             ]
         },
         {
-            "@type":"LocalBusiness","@id":website+"/#org",
+            "@type":"Organization","@id":website+"/#org",
             "name":brand,"url":website,"telephone":phone,"email":email,
-            "address":{"@type":"PostalAddress","addressLocality":"Katihar","addressRegion":"Bihar",
-                        "postalCode":"854105","addressCountry":"IN"},
             "areaServed":[city,state,"India"],
             "sameAs":[website],
             "description":f"School ERP Software for schools in {city}, {state}."
@@ -972,17 +1120,28 @@ def generate_city_html(city, state, country="India", is_international=False, var
             ]
         }
     ]
+    if (
+        s.get("has_physical_office_in_city", "0") == "1"
+        or (s.get("primary_business_city", "").strip().lower() == city.strip().lower())
+    ):
+        schema_graph.append({
+            "@type":"LocalBusiness","@id":website+"/#local",
+            "name":brand,"url":website,"telephone":phone,"email":email,
+            "address":{"@type":"PostalAddress","addressLocality":city,"addressRegion":state,"addressCountry":"IN"},
+            "areaServed":[city,state,"India"],
+            "description":f"Local support context for {city}, {state}."
+        })
 
-    if video_id:
+    if video_info:
         schema_graph.append({
             "@type":"VideoObject",
             "name": f"TACHY School ERP Demo for {city}",
             "description": f"See how TACHY School ERP works for schools in {city}, {state}. Full demo of admissions, fees, attendance and exam modules.",
-            "thumbnailUrl": f"{website}/assets/video-thumb.jpg",
-            "uploadDate": "2025-01-15T08:00:00+05:30",
-            "contentUrl": f"https://www.youtube.com/watch?v={video_id}",
-            "embedUrl": f"https://www.youtube.com/embed/{video_id}",
-            "duration": "PT8M30S"
+            "thumbnailUrl": video_info.thumbnail_url,
+            "uploadDate": s.get("youtube_upload_date", "2025-01-15"),
+            "contentUrl": video_info.watch_url,
+            "embedUrl": video_info.embed_url,
+            "duration": s.get("youtube_duration", "PT8M30S")
         })
 
     schema = json.dumps({
@@ -1376,9 +1535,9 @@ footer{{border-top:1px solid var(--border);padding:24px 0;color:var(--muted);fon
   <h2>The Smart Choice for <span class="grad">{city} Schools</span></h2>
   <p class="sub">Here's why school owners and principals in {city} consistently choose TACHY over every other school ERP option:</p>
   <div class="why-grid">
-   <div class="why-card"><div class="wnum">1</div><div><h4>Designed for Non-Technical Staff</h4><p>Any teacher, admin, or accountant in {city} can be trained in under 4 hours. No IT expertise required — guaranteed.</p></div></div>
+   <div class="why-card"><div class="wnum">1</div><div><h4>Designed for Non-Technical Staff</h4><p>Teacher, admin, and accountant workflows are designed for quick onboarding with guided support.</p></div></div>
    <div class="why-card"><div class="wnum">2</div><div><h4>Affordable for {city} Schools</h4><p>Flexible monthly/annual plans fitting budgets from 200-student primary schools to 2,000-student institutions in {city}.</p></div></div>
-   <div class="why-card"><div class="wnum">3</div><div><h4>Go Live in 3–7 Days</h4><p>Our team handles all data migration, configuration, and staff training. Most {city} schools are live within one week.</p></div></div>
+   <div class="why-card"><div class="wnum">3</div><div><h4>Structured Go-Live Plan</h4><p>Our team supports migration, configuration, and training with timelines based on each school's readiness.</p></div></div>
    <div class="why-card"><div class="wnum">4</div><div><h4>Dedicated WhatsApp Support</h4><p>We understand {state} schools. Our support team is available 6 days/week — just WhatsApp us anytime.</p></div></div>
    <div class="why-card"><div class="wnum">5</div><div><h4>All Indian Boards Configured</h4><p>CBSE, ICSE, IGCSE, and {sd['board']} — all grading formats, report cards, and term structures ready to use.</p></div></div>
    <div class="why-card"><div class="wnum">6</div><div><h4>Cloud-Based, No Server Needed</h4><p>Access your {city} school's data from any device, anywhere. Automatic cloud backup keeps data always safe.</p></div></div>
@@ -1392,7 +1551,7 @@ footer{{border-top:1px solid var(--border);padding:24px 0;color:var(--muted);fon
   <div class="badge">School Leaders Trust TACHY</div>
   <h2>What Schools Say About <span class="grad">TACHY ERP</span></h2>
   <p class="sub">Principals, administrators and school owners across {state} share their TACHY experience.</p>
-  <div class="tgrid">{testis_html_str}</div>
+  <div class="tgrid">{testimonials_block}</div>
  </div>
 </section>
 
@@ -1506,20 +1665,78 @@ document.querySelectorAll('.btn-p').forEach(function(b){{
 </script>
 </body>
 </html>"""
+    if s.get("enable_legacy_meta_tags", "0") != "1":
+        html = re.sub(r'<meta[^>]+name="keywords"[^>]*>\n?', "", html, flags=re.I)
+        html = re.sub(r'<meta[^>]+name="revisit-after"[^>]*>\n?', "", html, flags=re.I)
+        html = re.sub(r'<meta[^>]+name="rating"[^>]*>\n?', "", html, flags=re.I)
     return html
 
 def generate_city_page(city, state, output_dir, country="India", is_international=False, variation_seed=0, first_pub_date="2025-01-01"):
     os.makedirs(output_dir, exist_ok=True)
-    slug = city.lower().replace(" ","-") + ("-indian-school-erp" if is_international else "-school-erp")
+    slug = f"{sanitize_slug(city)}" + ("-indian-school-erp" if is_international else "-school-erp")
     html = generate_city_html(city, state, country, is_international, variation_seed, first_pub_date=first_pub_date)
+    row_validation = validate_location_row(city, state, country)
+    qc = run_quality_gate(
+        DB_PATH,
+        html_doc=html,
+        slug=slug,
+        page_type="city_commercial",
+        location_valid=row_validation["review_state"] != "blocked_invalid",
+        review_state=row_validation["review_state"],
+    )
+    proof_ctx = proof_mode_context(DB_PATH, city, state, freshness_days=int(cfg("proof_freshness_days") or "180"))
+    safety = run_publish_safety_validator(
+        html_doc=html,
+        city=city,
+        config=_s(),
+        proof_mode=proof_ctx.get("mode", "neutral"),
+        testimonials=proof_ctx.get("testimonials", []),
+    )
+    html = safety.rewritten_html
+    if safety.publish_safety_status != "safe" and qc.publish_status == "publish_ready":
+        qc.publish_status = "manual_review"
+    if qc.publish_status != "publish_ready":
+        html = apply_noindex_if_needed(html, qc.publish_status)
     path = os.path.join(output_dir, slug + ".html")
     with open(path, "w", encoding="utf-8") as f:
         f.write(html)
     wc    = len(re.findall(r'\w+', re.sub(r'<[^>]+>', '', html)))
-    score = _seo_score_v3(html, city, state)
+    score = min(100, int((_seo_score_v3(html, city, state) + qc.quality_score) / 2))
     meta  = (f"Best school ERP software in {city}, {state}. TACHY automates admissions, fees, "
              f"attendance, exams & transport. Free demo: {cfg('phone')}.")
-    return path, wc, score, meta, first_pub_date
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        """
+        INSERT INTO page_qc(
+            slug,page_type,content_hash,similarity_score,thin_content,quality_score,publish_status,
+            schema_status,image_status,proof_status,reason_codes,visible_text,review_state,keyword_bucket_map,language_variant,
+            claim_status,video_status,business_entity_status,testimonial_status,outdated_meta_status,publish_safety_status
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            slug, "city", qc.content_hash, qc.similarity_score, qc.thin_content, qc.quality_score, qc.publish_status,
+            qc.schema_status, qc.image_status, "verified" if "aggregaterating" in html.lower() else "neutral",
+            json.dumps(qc.reason_codes), re.sub(r"<[^>]+>", " ", html)[:12000], row_validation["review_state"],
+            json.dumps(KEYWORD_BUCKETS), "en-IN",
+            safety.claim_status, safety.video_status, safety.business_entity_status, safety.testimonial_status,
+            safety.outdated_meta_status, safety.publish_safety_status,
+        ),
+    )
+    conn.execute(
+        """
+        INSERT INTO publish_safety_log(
+            slug,publish_safety_status,issue_codes,claim_status,video_status,business_entity_status,testimonial_status,outdated_meta_status,schema_status
+        ) VALUES(?,?,?,?,?,?,?,?,?)
+        """,
+        (
+            slug, safety.publish_safety_status, json.dumps(safety.issue_codes), safety.claim_status,
+            safety.video_status, safety.business_entity_status, safety.testimonial_status,
+            safety.outdated_meta_status, safety.schema_status,
+        ),
+    )
+    conn.commit()
+    conn.close()
+    return path, wc, score, meta, first_pub_date, qc, safety
 
 def generate_state_hub_html(state, cities_data):
     s = _s()
@@ -1876,6 +2093,7 @@ class App(tk.Tk):
         self._tab_advanced()
         self._tab_backlinks()
         self._tab_keywords()
+        self._tab_publish_safety()
         self._tab_settings()
         self._tab_log()
 
@@ -2178,14 +2396,25 @@ class App(tk.Tk):
         """Insert parsed city rows into DB. Returns (added, skipped)."""
         added = skipped = 0
         conn = sqlite3.connect(DB_PATH)
+        existing_slugs = {r[0] for r in conn.execute("SELECT slug FROM cities").fetchall()}
         for city, state, country, tier in rows:
-            is_intl = 0 if country.lower() in ("india", "भारत") else 1
-            slug = city.lower().replace(" ","-") + ("-indian-school-erp" if is_intl else "-school-erp")
+            val = validate_location_row(city, state, country, existing_slugs=existing_slugs)
             try:
                 conn.execute(
-                    "INSERT INTO cities(city_name,state_name,country,slug,tier,is_international) VALUES(?,?,?,?,?,?)",
-                    (city, state, country, slug, tier, is_intl)
+                    """
+                    INSERT INTO cities(city_name,state_name,country,slug,tier,is_international,review_state,validation_notes)
+                    VALUES(?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        val["city"], val["state"], val["country"], val["slug"], tier, val["is_international"],
+                        val["review_state"], json.dumps(val["reasons"])
+                    )
                 )
+                conn.execute(
+                    "INSERT INTO import_reviews(city_name,state_name,country,slug,review_state,reason_codes) VALUES(?,?,?,?,?,?)",
+                    (val["city"], val["state"], val["country"], val["slug"], val["review_state"], json.dumps(val["reasons"]))
+                )
+                existing_slugs.add(val["slug"])
                 added += 1
             except sqlite3.IntegrityError:
                 skipped += 1
@@ -2293,8 +2522,9 @@ class App(tk.Tk):
         srch = self._srch.get() if hasattr(self,"_srch") else ""
         flt  = self._flt.get() if hasattr(self,"_flt") else "All"
         conn = sqlite3.connect(DB_PATH)
-        q = """SELECT ci.id,ci.city_name,ci.state_name,ci.country,ci.tier,ci.is_international,
-                      gp.seo_score,gp.word_count,gp.generated_at
+        q = """SELECT ci.id,ci.city_name,ci.state_name,ci.country,ci.tier,ci.is_international,ci.review_state,
+                      gp.seo_score,gp.word_count,gp.generated_at,gp.publish_status,gp.quality_score,
+                      gp.claim_status,gp.schema_status,gp.video_status,gp.testimonial_status,gp.business_entity_status,gp.outdated_meta_status,gp.publish_safety_status
                FROM cities ci LEFT JOIN generated_pages gp ON gp.city_id=ci.id"""
         conds, params = [], []
         if srch:
@@ -2308,9 +2538,11 @@ class App(tk.Tk):
         q += " ORDER BY ci.country, ci.state_name, ci.city_name"
         rows = conn.execute(q, params).fetchall(); conn.close()
         for row in rows:
-            cid,city,state,country,tier,intl,score,wc,gat = row
+            cid,city,state,country,tier,intl,review_state,score,wc,gat,publish_status,quality_score,claim_status,schema_status,video_status,testimonial_status,biz_status,outdated_meta_status,safety_status = row
             status = "✅ Done" if gat else "⬜ Pending"
-            sc = f"{score}/100" if score else "—"
+            if publish_status and gat:
+                status = f"{status} • {publish_status} • {safety_status or 'manual_review'}"
+            sc = f"{score}/100 | QC {quality_score or 0} | schema:{schema_status or 'n/a'} | video:{video_status or 'n/a'}" if score else "—"
             tag = "done" if gat else ("intl" if intl else "pend")
             self.ctree.insert("","end", iid=str(cid),
                               values=(city,state,country,tier or "2",status,sc,wc or "—",(gat or "—")[:16]), tags=(tag,))
@@ -2329,14 +2561,19 @@ class App(tk.Tk):
         country = self._ctry.get().strip()
         if not city or not state:
             messagebox.showwarning("Input","Enter city name and state."); return
-        is_intl = 1 if country != "India" else 0
-        slug = city.lower().replace(" ","-") + ("-indian-school-erp" if is_intl else "-school-erp")
         conn = sqlite3.connect(DB_PATH)
+        existing_slugs = {r[0] for r in conn.execute("SELECT slug FROM cities").fetchall()}
+        val = validate_location_row(city, state, country, existing_slugs=existing_slugs)
         try:
-            conn.execute("INSERT INTO cities(city_name,state_name,country,slug,is_international) VALUES(?,?,?,?,?)",
-                         (city,state,country,slug,is_intl))
+            conn.execute(
+                """
+                INSERT INTO cities(city_name,state_name,country,slug,is_international,review_state,validation_notes)
+                VALUES(?,?,?,?,?,?,?)
+                """,
+                (val["city"], val["state"], val["country"], val["slug"], val["is_international"], val["review_state"], json.dumps(val["reasons"]))
+            )
             conn.commit(); self._cv.set("")
-            log_db("ADD_CITY", f"{city}, {state}, {country}")
+            log_db("ADD_CITY", f"{city}, {state}, {country}, review_state={val['review_state']}")
         except sqlite3.IntegrityError:
             messagebox.showwarning("Duplicate", f"{city} already exists.")
         finally:
@@ -2517,7 +2754,7 @@ class App(tk.Tk):
                 self._ui(self._bulk_log_append, f"Generating: {city}, {state}, {country}...")
 
                 try:
-                    slug = city.lower().replace(" ","-") + ("-indian-school-erp" if is_intl else "-school-erp")
+                    slug = sanitize_slug(city) + ("-indian-school-erp" if is_intl else "-school-erp")
 
                     # Per-thread DB connection — NO sharing across threads
                     db_conn = sqlite3.connect(DB_PATH)
@@ -2525,25 +2762,50 @@ class App(tk.Tk):
                     existing = db_conn.execute("SELECT first_generated_at FROM generated_pages WHERE slug=?", (slug,)).fetchone()
                     first_pub_date = existing[0] if existing and existing[0] else datetime.now().strftime("%Y-%m-%d")
 
-                    path, wc, score, meta, first_pub_date = generate_city_page(
+                    path, wc, score, meta, first_pub_date, qc, safety = generate_city_page(
                         city, state, od, country, is_intl, variation_seed=i, first_pub_date=first_pub_date
                     )
 
                     db_conn.execute("""
-                        INSERT INTO generated_pages(city_id,page_type,slug,file_path,word_count,seo_score,first_generated_at)
-                        VALUES(?,?,?,?,?,?,?)
+                        INSERT INTO generated_pages(
+                            city_id,page_type,slug,file_path,word_count,seo_score,first_generated_at,
+                            quality_score,publish_status,schema_status,similarity_score,proof_status,image_status,review_state,keyword_bucket_map,
+                            claim_status,video_status,business_entity_status,testimonial_status,outdated_meta_status,publish_safety_status
+                        )
+                        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                         ON CONFLICT(slug) DO UPDATE SET
                             file_path=excluded.file_path,
                             word_count=excluded.word_count,
                             seo_score=excluded.seo_score,
+                            quality_score=excluded.quality_score,
+                            publish_status=excluded.publish_status,
+                            schema_status=excluded.schema_status,
+                            similarity_score=excluded.similarity_score,
+                            proof_status=excluded.proof_status,
+                            image_status=excluded.image_status,
+                            review_state=excluded.review_state,
+                            keyword_bucket_map=excluded.keyword_bucket_map,
+                            claim_status=excluded.claim_status,
+                            video_status=excluded.video_status,
+                            business_entity_status=excluded.business_entity_status,
+                            testimonial_status=excluded.testimonial_status,
+                            outdated_meta_status=excluded.outdated_meta_status,
+                            publish_safety_status=excluded.publish_safety_status,
                             generated_at=CURRENT_TIMESTAMP
-                    """, (cid, "city", slug, path, wc, score, first_pub_date))
+                    """, (
+                        cid, "city", slug, path, wc, score, first_pub_date,
+                        qc.quality_score, qc.publish_status, qc.schema_status, qc.similarity_score,
+                        "verified" if "aggregaterating" in open(path, encoding="utf-8").read().lower() else "neutral",
+                        qc.image_status, "manual_review", json.dumps(KEYWORD_BUCKETS),
+                        safety.claim_status, safety.video_status, safety.business_entity_status,
+                        safety.testimonial_status, safety.outdated_meta_status, safety.publish_safety_status
+                    ))
                     db_conn.commit()
                     db_conn.close()
 
                     log_db("GEN", f"{city},{state},score={score},words={wc}")
                     ok_count += 1
-                    self._ui(self._bulk_log_append, f"  ✅ {city} — {score}/100 score, {wc} words")
+                    self._ui(self._bulk_log_append, f"  ✅ {city} — SEO {score}/100, QC {qc.quality_score}/100, publish={qc.publish_status}, safety={safety.publish_safety_status}, words={wc}")
 
                 except Exception as e:
                     err_count += 1
@@ -2584,31 +2846,66 @@ class App(tk.Tk):
         self._sout.insert("end", f"Generating {city}, {state}, {ctry}...\n")
         def work():
             try:
-                slug = city.lower().replace(" ","-") + ("-indian-school-erp" if is_intl else "-school-erp")
+                slug = sanitize_slug(city) + ("-indian-school-erp" if is_intl else "-school-erp")
                 conn = sqlite3.connect(DB_PATH)
-                conn.execute("INSERT OR IGNORE INTO cities(city_name,state_name,country,slug,is_international) VALUES(?,?,?,?,?)",
-                             (city,state,ctry,slug,1 if is_intl else 0))
+                v = validate_location_row(city, state, ctry)
+                slug = v["slug"]
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO cities(city_name,state_name,country,slug,is_international,review_state,validation_notes)
+                    VALUES(?,?,?,?,?,?,?)
+                    """,
+                    (v["city"], v["state"], v["country"], slug, 1 if is_intl else 0, v["review_state"], json.dumps(v["reasons"]))
+                )
                 conn.commit()
                 cid = conn.execute("SELECT id FROM cities WHERE city_name=? AND state_name=?",(city,state)).fetchone()[0]
                 conn.close()
-                path, wc, score, meta, first_pub_date = generate_city_page(city, state, od, ctry, is_intl, var)
+                path, wc, score, meta, first_pub_date, qc, safety = generate_city_page(city, state, od, ctry, is_intl, var)
                 conn = sqlite3.connect(DB_PATH)
                 existing = conn.execute("SELECT first_generated_at FROM generated_pages WHERE slug=?", (slug,)).fetchone()
                 first_pub_date = existing[0] if existing and existing[0] else first_pub_date
                 conn.execute("""
-                    INSERT INTO generated_pages(city_id,page_type,slug,file_path,word_count,seo_score,first_generated_at)
-                    VALUES(?,?,?,?,?,?,?)
+                    INSERT INTO generated_pages(
+                        city_id,page_type,slug,file_path,word_count,seo_score,first_generated_at,
+                        quality_score,publish_status,schema_status,similarity_score,proof_status,image_status,review_state,keyword_bucket_map,
+                        claim_status,video_status,business_entity_status,testimonial_status,outdated_meta_status,publish_safety_status
+                    )
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     ON CONFLICT(slug) DO UPDATE SET
                         file_path=excluded.file_path,
                         word_count=excluded.word_count,
                         seo_score=excluded.seo_score,
+                        quality_score=excluded.quality_score,
+                        publish_status=excluded.publish_status,
+                        schema_status=excluded.schema_status,
+                        similarity_score=excluded.similarity_score,
+                        proof_status=excluded.proof_status,
+                        image_status=excluded.image_status,
+                        review_state=excluded.review_state,
+                        keyword_bucket_map=excluded.keyword_bucket_map,
+                        claim_status=excluded.claim_status,
+                        video_status=excluded.video_status,
+                        business_entity_status=excluded.business_entity_status,
+                        testimonial_status=excluded.testimonial_status,
+                        outdated_meta_status=excluded.outdated_meta_status,
+                        publish_safety_status=excluded.publish_safety_status,
                         generated_at=CURRENT_TIMESTAMP
-                """, (cid,"city",slug,path,wc,score,first_pub_date))
+                """, (
+                    cid, "city", slug, path, wc, score, first_pub_date,
+                    qc.quality_score, qc.publish_status, qc.schema_status, qc.similarity_score,
+                    "verified" if "aggregaterating" in open(path, encoding="utf-8").read().lower() else "neutral",
+                    qc.image_status, "manual_review", json.dumps(KEYWORD_BUCKETS),
+                    safety.claim_status, safety.video_status, safety.business_entity_status,
+                    safety.testimonial_status, safety.outdated_meta_status, safety.publish_safety_status
+                ))
                 conn.commit(); conn.close()
                 def upd():
                     self._sout.insert("end", f"✅  File: {path}\n")
                     self._sout.insert("end", f"📝  Words: {wc}\n")
                     self._sout.insert("end", f"📊  SEO Score: {score}/100\n")
+                    self._sout.insert("end", f"🧪  QC Score: {qc.quality_score}/100\n")
+                    self._sout.insert("end", f"🚦  Publish Status: {qc.publish_status}\n")
+                    self._sout.insert("end", f"🛡  Safety Status: {safety.publish_safety_status}\n")
                     self._sout.insert("end", f"🔑  Target KW: school ERP software {city}\n")
                     self._sout.insert("end", f"🌐  URL: {_page_url(slug)}\n")
                     self._sout.insert("end", f"\n📋  Meta: {meta}\n")
@@ -3278,6 +3575,89 @@ https://tachy.in | +91 8434801033
             for r in rows: w.writerow(r)
         messagebox.showinfo("Exported", f"Keywords exported:\n{path}")
 
+    def _tab_publish_safety(self):
+        f = ttk.Frame(self.nb); self.nb.add(f, text="  🛡  Publish Safety  ")
+        f.columnconfigure(0, weight=1); f.rowconfigure(1, weight=1)
+        top = tk.Frame(f, bg="#060b18"); top.grid(row=0, column=0, sticky="ew", padx=14, pady=(12,6))
+        ttk.Button(top, text="🔄 Refresh Report", command=self._refresh_publish_safety).pack(side="left", padx=3)
+        ttk.Button(top, text="🧹 Rewrite Unsafe Claims", command=self._rewrite_unsafe_claims, style="Y.TButton").pack(side="left", padx=3)
+        self._safe_tree = ttk.Treeview(
+            f,
+            columns=("slug","publish","claim","schema","video","testimonial","business","meta","issues","created"),
+            show="headings"
+        )
+        widths = {"slug":220,"publish":90,"claim":90,"schema":80,"video":80,"testimonial":100,"business":100,"meta":80,"issues":260,"created":130}
+        for col in ("slug","publish","claim","schema","video","testimonial","business","meta","issues","created"):
+            self._safe_tree.heading(col, text=col.title())
+            self._safe_tree.column(col, width=widths[col], anchor="w")
+        self._safe_tree.grid(row=1, column=0, sticky="nsew", padx=14, pady=(0,8))
+        sb = ttk.Scrollbar(f, orient="vertical", command=self._safe_tree.yview)
+        self._safe_tree.configure(yscroll=sb.set); sb.grid(row=1, column=1, sticky="ns")
+        self._refresh_publish_safety()
+
+    def _refresh_publish_safety(self):
+        if not hasattr(self, "_safe_tree"):
+            return
+        for r in self._safe_tree.get_children():
+            self._safe_tree.delete(r)
+        conn = sqlite3.connect(DB_PATH)
+        rows = conn.execute(
+            """
+            SELECT slug,publish_safety_status,claim_status,schema_status,video_status,testimonial_status,business_entity_status,outdated_meta_status,issue_codes,created_at
+            FROM publish_safety_log
+            ORDER BY id DESC LIMIT 300
+            """
+        ).fetchall()
+        conn.close()
+        for row in rows:
+            self._safe_tree.insert("", "end", values=row)
+
+    def _rewrite_unsafe_claims(self):
+        conn = sqlite3.connect(DB_PATH)
+        rows = conn.execute(
+            """
+            SELECT gp.slug, gp.file_path, ci.city_name, ci.state_name
+            FROM generated_pages gp
+            JOIN cities ci ON ci.id = gp.city_id
+            WHERE gp.publish_safety_status != 'safe'
+            ORDER BY gp.generated_at DESC
+            LIMIT 100
+            """
+        ).fetchall()
+        rewritten = 0
+        for slug, file_path, city, state in rows:
+            if not file_path or not os.path.exists(file_path):
+                continue
+            try:
+                with open(file_path, "r", encoding="utf-8") as fh:
+                    html = fh.read()
+                proof_ctx = proof_mode_context(DB_PATH, city, state, freshness_days=int(cfg("proof_freshness_days") or "180"))
+                safety = run_publish_safety_validator(html, city, _s(), proof_ctx.get("mode", "neutral"), proof_ctx.get("testimonials", []))
+                with open(file_path, "w", encoding="utf-8") as fh:
+                    fh.write(safety.rewritten_html)
+                conn.execute(
+                    """
+                    INSERT INTO publish_safety_log(slug,publish_safety_status,issue_codes,claim_status,video_status,business_entity_status,testimonial_status,outdated_meta_status,schema_status)
+                    VALUES(?,?,?,?,?,?,?,?,?)
+                    """,
+                    (slug, safety.publish_safety_status, json.dumps(safety.issue_codes), safety.claim_status, safety.video_status,
+                     safety.business_entity_status, safety.testimonial_status, safety.outdated_meta_status, safety.schema_status)
+                )
+                conn.execute(
+                    """
+                    UPDATE generated_pages
+                    SET publish_safety_status=?, claim_status=?, video_status=?, business_entity_status=?, testimonial_status=?, outdated_meta_status=?
+                    WHERE slug=?
+                    """,
+                    (safety.publish_safety_status, safety.claim_status, safety.video_status, safety.business_entity_status, safety.testimonial_status, safety.outdated_meta_status, slug)
+                )
+                rewritten += 1
+            except Exception as exc:
+                log_db("SAFETY_REWRITE_ERR", f"{slug}: {exc}")
+        conn.commit(); conn.close()
+        self._refresh_publish_safety()
+        messagebox.showinfo("Publish Safety", f"Processed {rewritten} pages for unsafe-claim rewrites.")
+
     # ══════════════════════════════════════════════════════════
     #  TAB 7 — SETTINGS
     # ══════════════════════════════════════════════════════════
@@ -3304,12 +3684,18 @@ https://tachy.in | +91 8434801033
             # SEO subfolder — CRITICAL for tachy.in/seo/ deployment
             ("SEO Subfolder Path (e.g. seo)","seo_base_path"),
             ("YouTube Demo Video ID", "demo_video_id"),
+            ("YouTube Upload Date (YYYY-MM-DD)", "youtube_upload_date"),
+            ("YouTube Duration (ISO8601 e.g. PT2M30S)", "youtube_duration"),
             ("OG Share Image Path", "og_image"),
             ("Live Review Count (from G2/SoftwareSuggest)", "review_count"),
             ("Average Rating Score (e.g. 4.8)", "rating_value"),
             ("SoftwareSuggest URL", "softwaresuggest_url"),
             ("G2 Profile URL", "g2_url"),
             ("Capterra URL", "capterra_url"),
+            ("Has Physical Office In City (0/1)", "has_physical_office_in_city"),
+            ("Use Service Area Business Mode (0/1)", "use_service_area_business_mode"),
+            ("Primary Business City", "primary_business_city"),
+            ("Enable Legacy Meta Tags (0/1)", "enable_legacy_meta_tags"),
         ]
         for i, (lbl, key) in enumerate(fields, 1):
             tk.Label(inner, text=lbl, bg="#060b18", fg="#a0b4d4",
