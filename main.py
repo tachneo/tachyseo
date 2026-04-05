@@ -40,25 +40,11 @@ from seo_upgrade import (
     BLOCKED_LOCATION_TERMS,
     KEYWORD_BUCKETS,
     apply_noindex_if_needed,
-    auto_select_output_mode,
-    calculate_school_specificity_score,
-    compare_with_other_client_pages,
-    compare_with_tachy_pages,
-    generate_board_city_page,
-    generate_client_page,
-    generate_comparison_page,
-    generate_gbp_posts,
-    generate_hindi_city_page,
-    generate_locality_page,
-    generate_module_city_page,
-    generate_voice_faq_page,
-    generate_wa_broadcasts,
     parse_youtube_input,
     proof_mode_context,
     run_publish_safety_validator,
     run_quality_gate,
     sanitize_slug,
-    validate_client_anchor,
     validate_location_row,
 )
 
@@ -312,57 +298,6 @@ BLOG_TEMPLATES = {
     },
 }
 
-BOARD_INTROS = [
-    "Schools in {city} following {board} workflows need board-aligned ERP structures and report formats.",
-    "{board} schools in {city}, {state} can standardize grading and administration with digital workflows.",
-    "For {board} institutions in {city}, compliance and report generation become easier with structured ERP usage.",
-    "Administrators in {city} running {board} schools need reliable data flow from attendance to report cards.",
-    "{board} schools across {state} and {city} benefit from unified fee, exam, and academic records.",
-    "From admissions to final results, {board} schools in {city} require consistent and auditable processes.",
-    "Digitization priorities for {board} schools in {city} include report cards, fees, and parent communication.",
-    "{city} schools under {board} standards can reduce manual administration through centralized ERP operations.",
-]
-LOCALITY_INTROS = [
-    "Schools in {city}'s {board} locality clusters need localized onboarding and support context.",
-    "Local administrators in {city} often look for neighborhood-relevant ERP implementation guidance.",
-    "{city} locality pages help schools evaluate service area readiness before platform rollout.",
-    "For schools around {city}, local context and support language improves implementation confidence.",
-    "Neighborhood-level school operations in {city} require practical digital workflows, not generic pages.",
-    "{city} locality-focused ERP guidance supports parents, teachers, and office staff during adoption.",
-    "Localized ERP pages for {city} align digital operations with community expectations and school size.",
-    "Sub-city ERP guidance in {city} helps schools compare modules and onboarding pathways.",
-]
-MODULE_CITY_INTROS = [
-    "{board} schools in {city} need module-focused workflows that match daily administrative routines.",
-    "Module + city pages for {city} help schools evaluate a single operational area in depth.",
-    "From {city} fee desks to attendance operations, focused module pages improve buying clarity.",
-    "Schools in {city} comparing module-specific ERP options need practical examples and process fit.",
-    "A module-first page for {city} clarifies implementation scope before full ERP rollout.",
-    "{city} school teams can benchmark module readiness and internal responsibilities clearly.",
-    "Module + locality + board context improves ERP decision quality for {city} administrators.",
-    "Schools in {city} use module pages to compare rollout complexity and support expectations.",
-]
-HINDI_HERO_INTROS = [
-    "{city}, {state} के स्कूलों के लिए डिजिटल प्रबंधन को सरल बनाने वाला स्कूल ERP समाधान।",
-    "{board} और अन्य बोर्ड वाले स्कूलों के लिए {city} में भरोसेमंद ERP मार्गदर्शन।",
-    "{city} के प्रिंसिपल और प्रशासनिक टीम के लिए फीस, उपस्थिति और रिपोर्ट कार्ड का एक प्लेटफॉर्म।",
-    "{state} के स्कूलों के लिए आसान, स्पष्ट और चरणबद्ध ERP अपनाने की जानकारी।",
-    "{city} स्कूलों में डिजिटल संचालन के लिए व्यावहारिक और सुरक्षित ERP ढांचा।",
-    "{board} अनुकूल वर्कफ़्लो के साथ {city} के स्कूलों के लिए प्रशासनिक दक्षता का समर्थन।",
-    "{city} के अभिभावक संचार, फीस प्रबंधन और परीक्षा प्रक्रियाओं के लिए डिजिटल सहायता।",
-    "{state} और {city} के K-12 स्कूलों के लिए आधुनिक स्कूल ERP परिचालन ढांचा।",
-]
-COMPARISON_INTROS = [
-    "A neutral comparison helps {city} schools evaluate fit, support, and implementation quality.",
-    "School leaders in {state} should compare ERP options on workflows, not marketing hype.",
-    "{city} administrators can use structured criteria to compare ERP tools fairly.",
-    "A balanced ERP comparison covers onboarding, support, reporting, and school-size fit.",
-    "For schools in {city}, practical implementation factors matter more than broad feature lists.",
-    "A comparison page should show where each platform fits different school contexts.",
-    "Neutral competitor comparisons reduce risk before switching from manual workflows.",
-    "School ERP comparisons should focus on transparency, clarity, and support readiness.",
-]
-
 MODULE_PAGES = [
     ("school-fee-management-software","School Fee Management Software India","Online Fee Collection & Billing",
      "school fee management software, online fee collection India, school billing software, fee receipt system, school fee app India"),
@@ -559,114 +494,6 @@ def init_db():
         schema_status TEXT DEFAULT 'invalid',
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
     );
-    CREATE TABLE IF NOT EXISTS client_schools (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        school_name TEXT NOT NULL,
-        school_domain TEXT NOT NULL,
-        city TEXT, state TEXT, board TEXT,
-        school_type TEXT,
-        num_branches INTEGER DEFAULT 1,
-        modules_used TEXT DEFAULT '[]',
-        go_live_date TEXT,
-        parent_app_available INTEGER DEFAULT 0,
-        fee_payment_available INTEGER DEFAULT 0,
-        report_card_available INTEGER DEFAULT 0,
-        attendance_available INTEGER DEFAULT 0,
-        support_email TEXT,
-        support_phone TEXT,
-        school_logo_path TEXT,
-        implementation_notes TEXT,
-        approved_testimonial TEXT,
-        approved_testimonial_person TEXT,
-        indexing_allowed INTEGER DEFAULT 1,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP
-    );
-    CREATE TABLE IF NOT EXISTS client_pages (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        client_school_id INTEGER,
-        page_type TEXT,
-        slug TEXT,
-        file_path TEXT,
-        visible_text TEXT,
-        word_count INTEGER DEFAULT 0,
-        school_specificity_score INTEGER DEFAULT 0,
-        cross_domain_similarity_score REAL DEFAULT 0,
-        tachy_similarity_score REAL DEFAULT 0,
-        indexing_mode TEXT DEFAULT 'noindex',
-        canonical_target TEXT DEFAULT '',
-        backlink_mode TEXT DEFAULT 'nofollow',
-        link_count_to_tachy INTEGER DEFAULT 0,
-        anchor_text_profile TEXT DEFAULT '{}',
-        proof_status TEXT DEFAULT 'neutral',
-        publish_status TEXT DEFAULT 'manual_review',
-        publish_safety_status TEXT DEFAULT 'manual_review',
-        reason_codes TEXT DEFAULT '[]',
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-        generated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY(client_school_id) REFERENCES client_schools(id)
-    );
-    CREATE TABLE IF NOT EXISTS client_similarity_log (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        client_slug TEXT,
-        compared_to_slug TEXT,
-        compared_to_domain TEXT,
-        similarity_score REAL,
-        action_taken TEXT,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP
-    );
-    CREATE TABLE IF NOT EXISTS canonical_decisions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        slug TEXT,
-        client_domain TEXT,
-        decision_type TEXT,
-        reason TEXT,
-        similarity_score REAL,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP
-    );
-    CREATE TABLE IF NOT EXISTS client_safety_log (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        client_slug TEXT,
-        issue_codes TEXT DEFAULT '[]',
-        school_specificity_score INTEGER DEFAULT 0,
-        publish_status TEXT DEFAULT 'manual_review',
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP
-    );
-    CREATE TABLE IF NOT EXISTS board_pages (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        board TEXT, city TEXT, state TEXT,
-        slug TEXT UNIQUE, file_path TEXT,
-        word_count INTEGER DEFAULT 0,
-        seo_score INTEGER DEFAULT 0,
-        generated_at TEXT DEFAULT CURRENT_TIMESTAMP
-    );
-    CREATE TABLE IF NOT EXISTS locality_pages (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        locality TEXT, city TEXT, state TEXT,
-        slug TEXT UNIQUE, file_path TEXT,
-        word_count INTEGER DEFAULT 0,
-        seo_score INTEGER DEFAULT 0,
-        generated_at TEXT DEFAULT CURRENT_TIMESTAMP
-    );
-    CREATE TABLE IF NOT EXISTS module_city_pages (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        module TEXT, city TEXT, state TEXT,
-        slug TEXT UNIQUE, file_path TEXT,
-        word_count INTEGER DEFAULT 0,
-        seo_score INTEGER DEFAULT 0,
-        generated_at TEXT DEFAULT CURRENT_TIMESTAMP
-    );
-    CREATE TABLE IF NOT EXISTS gbp_posts (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        city TEXT, state TEXT, post_type TEXT,
-        post_content TEXT, utm_url TEXT,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP
-    );
-    CREATE TABLE IF NOT EXISTS wa_broadcasts (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        city TEXT, state TEXT, target_role TEXT,
-        message_text TEXT, char_count INTEGER,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP
-    );
     """)
 
     defaults = {
@@ -700,8 +527,6 @@ def init_db():
         "enable_legacy_meta_tags":"0",
         "youtube_upload_date":"",
         "youtube_duration":"PT2M30S",
-        "powered_by_badge_sitewide":"0",
-        "powered_by_badge_rel":"nofollow",
     }
     for k, v in defaults.items():
         c.execute("INSERT OR IGNORE INTO settings VALUES(?,?)", (k, v))
@@ -1071,28 +896,6 @@ def _seo_score_v3(html, city, state):
     for pts, ok in checks:
         if ok: score += pts
     return min(score, 100)
-
-
-def _seo_score_v4(html, city, state, page_type="city", school_specificity_score=None):
-    base = _seo_score_v3(html, city, state)
-    lhtml = html.lower()
-    plus = 0
-    checks = [
-        ("hindi_hreflang", 'hreflang="hi"' in lhtml or "lang=\"hi" in lhtml),
-        ("board_in_headings", ("cbse" in lhtml or "icse" in lhtml or "board" in lhtml) and ("<h1" in lhtml or "<h2" in lhtml)),
-        ("module_in_title_h1", any(x in lhtml for x in ["fee", "attendance", "transport", "payroll"]) and "<title>" in lhtml and "<h1" in lhtml),
-        ("voice_faq", "what is" in lhtml and "faq" in lhtml),
-        ("roi_calculator", "roi" in lhtml and "calculate" in lhtml),
-        ("gbp_utm", "utm_source=gbp" in lhtml),
-        ("client_canonical", "canonical" in lhtml),
-        ("specificity_gt_60", school_specificity_score is not None and school_specificity_score > 60),
-        ("powered_by_rel", "powered by tachy school erp" in lhtml and ("rel=\"nofollow\"" in lhtml or "rel=\"sponsored\"" in lhtml or "rel=\"follow\"" in lhtml)),
-        ("comparison_table", page_type == "comparison" and "<table" in lhtml),
-    ]
-    for _name, ok in checks:
-        if ok:
-            plus += 2
-    return min(120, base + plus)
 
 def _related_cities_html(city, state, s):
     related = []
@@ -1898,7 +1701,7 @@ def generate_city_page(city, state, output_dir, country="India", is_internationa
     with open(path, "w", encoding="utf-8") as f:
         f.write(html)
     wc    = len(re.findall(r'\w+', re.sub(r'<[^>]+>', '', html)))
-    score = min(120, int((_seo_score_v4(html, city, state) + qc.quality_score) / 2))
+    score = min(100, int((_seo_score_v3(html, city, state) + qc.quality_score) / 2))
     meta  = (f"Best school ERP software in {city}, {state}. TACHY automates admissions, fees, "
              f"attendance, exams & transport. Free demo: {cfg('phone')}.")
     conn = sqlite3.connect(DB_PATH)
@@ -2288,13 +2091,6 @@ class App(tk.Tk):
         self._tab_cities()
         self._tab_bulk()
         self._tab_advanced()
-        self._tab_client_domains()
-        self._tab_board_pages()
-        self._tab_locality_pages()
-        self._tab_module_city_pages()
-        self._tab_gbp_posts()
-        self._tab_whatsapp_outreach()
-        self._tab_hindi_pages()
         self._tab_backlinks()
         self._tab_keywords()
         self._tab_publish_safety()
@@ -3861,228 +3657,6 @@ https://tachy.in | +91 8434801033
         conn.commit(); conn.close()
         self._refresh_publish_safety()
         messagebox.showinfo("Publish Safety", f"Processed {rewritten} pages for unsafe-claim rewrites.")
-
-    def _tab_client_domains(self):
-        f = ttk.Frame(self.nb); self.nb.add(f, text="  🏫  Client Domains  ")
-        f.columnconfigure(1, weight=1); f.rowconfigure(3, weight=1)
-        self._cd_vars = {
-            "school_name": tk.StringVar(),
-            "school_domain": tk.StringVar(),
-            "city": tk.StringVar(),
-            "state": tk.StringVar(),
-            "board": tk.StringVar(value="CBSE"),
-            "school_type": tk.StringVar(value="K-12"),
-            "modules_used": tk.StringVar(value="fees,attendance,exams"),
-            "go_live_date": tk.StringVar(),
-            "support_email": tk.StringVar(),
-            "support_phone": tk.StringVar(),
-            "proof_status": tk.StringVar(value="neutral"),
-            "page_type": tk.StringVar(value="parent_help_center"),
-            "indexing_mode": tk.StringVar(value="auto"),
-            "link_rel": tk.StringVar(value="nofollow"),
-        }
-        fields = [("School Name","school_name"),("School Domain","school_domain"),("City","city"),("State","state"),("Board","board"),("School Type","school_type"),("Modules (comma-separated)","modules_used"),("Go Live Date","go_live_date"),("Support Email","support_email"),("Support Phone","support_phone")]
-        for i, (lbl, key) in enumerate(fields):
-            tk.Label(f, text=lbl, bg="#060b18", fg="#94a3b8").grid(row=i, column=0, sticky="w", padx=12, pady=3)
-            ttk.Entry(f, textvariable=self._cd_vars[key], width=42).grid(row=i, column=1, sticky="ew", padx=8, pady=3)
-        ctrl = tk.Frame(f, bg="#060b18"); ctrl.grid(row=len(fields), column=0, columnspan=2, sticky="ew", padx=12, pady=6)
-        ttk.Label(ctrl, text="Page Type").pack(side="left")
-        ttk.Combobox(ctrl, textvariable=self._cd_vars["page_type"], values=["our_erp_page","parent_help_center","fee_payment_guide","attendance_guide","report_card_guide","erp_announcement","digital_transformation_story","case_study","school_faq","app_download_guide"], width=24, state="readonly").pack(side="left", padx=6)
-        ttk.Label(ctrl, text="Proof").pack(side="left", padx=(10,0))
-        ttk.Combobox(ctrl, textvariable=self._cd_vars["proof_status"], values=["verified","neutral","unverified"], width=12, state="readonly").pack(side="left", padx=6)
-        ttk.Label(ctrl, text="Rel").pack(side="left")
-        ttk.Combobox(ctrl, textvariable=self._cd_vars["link_rel"], values=["follow","nofollow","sponsored"], width=12, state="readonly").pack(side="left", padx=6)
-        ttk.Button(ctrl, text="💾 Save School", command=self._save_client_school).pack(side="left", padx=6)
-        ttk.Button(ctrl, text="⚙ Generate Client Page", command=self._generate_client_page).pack(side="left", padx=6)
-        self._cd_report = scrolledtext.ScrolledText(f, height=12, bg="#040810", fg="#b6e3ff", font=("Consolas",9))
-        self._cd_report.grid(row=len(fields)+1, column=0, columnspan=2, sticky="nsew", padx=12, pady=8)
-
-    def _save_client_school(self):
-        v = {k: sv.get().strip() for k, sv in self._cd_vars.items()}
-        modules = [m.strip() for m in v["modules_used"].split(",") if m.strip()]
-        conn = sqlite3.connect(DB_PATH)
-        conn.execute(
-            """
-            INSERT INTO client_schools(school_name,school_domain,city,state,board,school_type,modules_used,go_live_date,support_email,support_phone)
-            VALUES(?,?,?,?,?,?,?,?,?,?)
-            """,
-            (v["school_name"], v["school_domain"], v["city"], v["state"], v["board"], v["school_type"], json.dumps(modules), v["go_live_date"], v["support_email"], v["support_phone"])
-        )
-        conn.commit(); conn.close()
-        messagebox.showinfo("Saved", "Client school profile saved.")
-
-    def _generate_client_page(self):
-        v = {k: sv.get().strip() for k, sv in self._cd_vars.items()}
-        modules = [m.strip() for m in v["modules_used"].split(",") if m.strip()]
-        profile = {
-            "school_name": v["school_name"], "school_domain": v["school_domain"], "city": v["city"], "state": v["state"],
-            "board": v["board"], "school_type": v["school_type"], "modules_used": modules, "go_live_date": v["go_live_date"]
-        }
-        out = cfg("out_dir") or OUT_DIR
-        os.makedirs(out, exist_ok=True)
-        result = generate_client_page(v["page_type"], profile, _s(), proof_status=v["proof_status"])
-        html = result["html"]
-        tachy_sim = compare_with_tachy_pages(html, out)
-        client_sim = compare_with_other_client_pages(html, DB_PATH)
-        mode = auto_select_output_mode(v["page_type"], max(tachy_sim, client_sim), result["school_specificity_score"], v["proof_status"])
-        canonical_target = ""
-        if mode == "client_canonicalized":
-            canonical_target = _page_url(f"{sanitize_slug(v['city'])}-school-erp")
-            html = re.sub(r'<meta name="robots" content="[^"]*"/>', '<meta name="robots" content="noindex,nofollow"/>', html)
-            html = re.sub(r'<link rel="canonical" href="[^"]*"/>', f'<link rel="canonical" href="{canonical_target}"/>', html)
-        if result["school_specificity_score"] < 60:
-            html = apply_noindex_if_needed(html, "manual_review")
-        path = os.path.join(out, f"{result['slug']}.html")
-        with open(path, "w", encoding="utf-8") as fh:
-            fh.write(html)
-        anchors = ["TACHY School ERP"]
-        valid_anchors = [validate_client_anchor(a)[0] for a in anchors]
-        link_count = html.lower().count("tachy.in")
-        safety = run_publish_safety_validator(
-            html_doc=html,
-            city=v["city"],
-            config=_s(),
-            proof_mode=v["proof_status"],
-            testimonials=[],
-            client_context={
-                "school_specificity_score": result["school_specificity_score"],
-                "anchors": anchors,
-                "tachy_link_count": link_count,
-                "cross_domain_similarity": tachy_sim,
-                "canonical_mode": mode,
-            },
-        )
-        html = safety.rewritten_html
-        issue_codes = []
-        if result["school_specificity_score"] < 55: issue_codes.append("school_specificity_low")
-        if link_count > 2: issue_codes.append("client_tachy_link_overcount")
-        if not all(valid_anchors): issue_codes.append("exact_match_anchor_overuse")
-        if tachy_sim > 0.75: issue_codes.append("cross_domain_similarity_high")
-        issue_codes.extend(safety.issue_codes)
-        with open(path, "w", encoding="utf-8") as fh:
-            fh.write(html)
-        conn = sqlite3.connect(DB_PATH)
-        school_row = conn.execute("SELECT id FROM client_schools WHERE school_name=? AND school_domain=? ORDER BY id DESC LIMIT 1", (v["school_name"], v["school_domain"])).fetchone()
-        school_id = school_row[0] if school_row else None
-        conn.execute(
-            """
-            INSERT INTO client_pages(client_school_id,page_type,slug,file_path,visible_text,word_count,school_specificity_score,cross_domain_similarity_score,tachy_similarity_score,indexing_mode,canonical_target,backlink_mode,link_count_to_tachy,anchor_text_profile,proof_status,publish_status,publish_safety_status,reason_codes)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            """,
-            (school_id, v["page_type"], result["slug"], path, re.sub(r"<[^>]+>"," ",html), len(re.findall(r"\w+", re.sub(r"<[^>]+>"," ",html))), result["school_specificity_score"], client_sim, tachy_sim, mode, canonical_target, v["link_rel"], link_count, json.dumps({"anchors":anchors}), v["proof_status"], "manual_review" if issue_codes else "publish_ready", "manual_review" if issue_codes else "safe", json.dumps(issue_codes))
-        )
-        conn.execute("INSERT INTO client_similarity_log(client_slug,compared_to_slug,compared_to_domain,similarity_score,action_taken) VALUES(?,?,?,?,?)", (result["slug"], "", "tachy.in", tachy_sim, mode))
-        conn.execute("INSERT INTO canonical_decisions(slug,client_domain,decision_type,reason,similarity_score) VALUES(?,?,?,?,?)", (result["slug"], v["school_domain"], mode, ",".join(issue_codes) or "auto", max(tachy_sim, client_sim)))
-        if issue_codes:
-            conn.execute("INSERT INTO client_safety_log(client_slug,issue_codes,school_specificity_score,publish_status) VALUES(?,?,?,?)", (result["slug"], json.dumps(issue_codes), result["school_specificity_score"], "manual_review"))
-        conn.commit(); conn.close()
-        self._cd_report.insert("end", f"Generated: {path}\nMode: {mode}\nSpecificity: {result['school_specificity_score']}\nTachySim: {tachy_sim}\nClientSim: {client_sim}\nIssues: {issue_codes}\n\n")
-
-    def _tab_board_pages(self):
-        f = ttk.Frame(self.nb); self.nb.add(f, text="  📋  Board Pages  ")
-        f.columnconfigure(0, weight=1); f.rowconfigure(2, weight=1)
-        self._bp_board = tk.StringVar(value="CBSE")
-        self._bp_cities = tk.StringVar(value="Patna,Lucknow,Ranchi")
-        ttk.Combobox(f, textvariable=self._bp_board, values=["CBSE","ICSE","Bihar Board","UP Board","MP Board","RBSE","WBBSE"], state="readonly").grid(row=0,column=0,sticky="w",padx=12,pady=6)
-        ttk.Entry(f, textvariable=self._bp_cities).grid(row=1,column=0,sticky="ew",padx=12,pady=6)
-        ttk.Button(f, text="Generate Board+City Pages", command=self._generate_board_pages_bulk).grid(row=1,column=1,padx=8)
-        self._bp_log = scrolledtext.ScrolledText(f, height=16, bg="#040810", fg="#9bd2ff", font=("Consolas",9)); self._bp_log.grid(row=2,column=0,columnspan=2,sticky="nsew",padx=12,pady=8)
-
-    def _generate_board_pages_bulk(self):
-        board = self._bp_board.get(); cities = [c.strip() for c in self._bp_cities.get().split(",") if c.strip()]
-        out = cfg("out_dir") or OUT_DIR; os.makedirs(out, exist_ok=True)
-        conn = sqlite3.connect(DB_PATH)
-        for city in cities:
-            state = DISTRICT_TO_STATE.get(city, cfg("base_state") or "Bihar")
-            page = generate_board_city_page(board, city, state, cfg("website") or "https://tachy.in")
-            path = os.path.join(out, f"{page['slug']}.html"); open(path,"w",encoding="utf-8").write(page["html"])
-            conn.execute("INSERT OR REPLACE INTO board_pages(board,city,state,slug,file_path,word_count,seo_score,generated_at) VALUES(?,?,?,?,?,?,?,CURRENT_TIMESTAMP)", (board, city, state, page["slug"], path, len(re.findall(r'\\w+', re.sub(r'<[^>]+>',' ',page['html']))), 0))
-            self._bp_log.insert("end", f"{page['slug']}\n")
-        conn.commit(); conn.close()
-
-    def _tab_locality_pages(self):
-        f = ttk.Frame(self.nb); self.nb.add(f, text="  🏘  Locality Pages  ")
-        self._loc_city = tk.StringVar(value="Patna"); self._loc_state = tk.StringVar(value="Bihar"); self._loc_list = tk.StringVar(value="Kankarbagh,Boring Road,Danapur")
-        ttk.Entry(f, textvariable=self._loc_city).grid(row=0,column=0,padx=8,pady=6); ttk.Entry(f, textvariable=self._loc_state).grid(row=0,column=1,padx=8,pady=6); ttk.Entry(f, textvariable=self._loc_list,width=40).grid(row=1,column=0,columnspan=2,padx=8,pady=6)
-        ttk.Button(f, text="Generate Locality Pages", command=self._generate_locality_pages).grid(row=1,column=2,padx=8)
-
-    def _generate_locality_pages(self):
-        city, state = self._loc_city.get().strip(), self._loc_state.get().strip()
-        out = cfg("out_dir") or OUT_DIR; os.makedirs(out, exist_ok=True); conn=sqlite3.connect(DB_PATH)
-        for locality in [x.strip() for x in self._loc_list.get().split(",") if x.strip()]:
-            page = generate_locality_page(locality, city, state, cfg("website") or "https://tachy.in")
-            path = os.path.join(out, f"{page['slug']}.html"); open(path,"w",encoding="utf-8").write(page["html"])
-            conn.execute("INSERT OR REPLACE INTO locality_pages(locality,city,state,slug,file_path,word_count,seo_score,generated_at) VALUES(?,?,?,?,?,?,?,CURRENT_TIMESTAMP)", (locality, city, state, page["slug"], path, len(re.findall(r'\\w+', re.sub(r'<[^>]+>',' ',page['html']))), 0))
-        conn.commit(); conn.close(); messagebox.showinfo("Done","Locality pages generated.")
-
-    def _tab_module_city_pages(self):
-        f = ttk.Frame(self.nb); self.nb.add(f, text="  📦  Module+City  ")
-        self._mc_modules = tk.StringVar(value="fee-management,attendance,transport")
-        self._mc_cities = tk.StringVar(value="Lucknow,Patna,Ranchi")
-        ttk.Entry(f, textvariable=self._mc_modules, width=48).grid(row=0,column=0,padx=8,pady=6)
-        ttk.Entry(f, textvariable=self._mc_cities, width=48).grid(row=1,column=0,padx=8,pady=6)
-        ttk.Button(f, text="Generate Module+City", command=self._generate_module_city_pages).grid(row=1,column=1,padx=8)
-
-    def _generate_module_city_pages(self):
-        out = cfg("out_dir") or OUT_DIR; os.makedirs(out, exist_ok=True); conn=sqlite3.connect(DB_PATH)
-        mods = [m.strip() for m in self._mc_modules.get().split(",") if m.strip()]
-        cities = [c.strip() for c in self._mc_cities.get().split(",") if c.strip()]
-        for m in mods:
-            for city in cities:
-                state = DISTRICT_TO_STATE.get(city, cfg("base_state") or "Bihar")
-                page = generate_module_city_page(m, city, state, cfg("website") or "https://tachy.in")
-                path = os.path.join(out, f"{page['slug']}.html"); open(path,"w",encoding="utf-8").write(page["html"])
-                conn.execute("INSERT OR REPLACE INTO module_city_pages(module,city,state,slug,file_path,word_count,seo_score,generated_at) VALUES(?,?,?,?,?,?,?,CURRENT_TIMESTAMP)", (m, city, state, page["slug"], path, len(re.findall(r'\\w+', re.sub(r'<[^>]+>',' ',page['html']))), 0))
-        conn.commit(); conn.close(); messagebox.showinfo("Done","Module+city pages generated.")
-
-    def _tab_gbp_posts(self):
-        f = ttk.Frame(self.nb); self.nb.add(f, text="  💬  GBP Posts  ")
-        self._gbp_city = tk.StringVar(value="Patna"); self._gbp_state = tk.StringVar(value="Bihar")
-        ttk.Entry(f, textvariable=self._gbp_city).grid(row=0,column=0,padx=8,pady=6); ttk.Entry(f,textvariable=self._gbp_state).grid(row=0,column=1,padx=8,pady=6)
-        ttk.Button(f, text="Generate GBP Posts", command=self._generate_gbp_posts).grid(row=0,column=2,padx=8)
-        self._gbp_out = scrolledtext.ScrolledText(f, height=16, bg="#040810", fg="#ffd479", font=("Consolas",9)); self._gbp_out.grid(row=1,column=0,columnspan=3,sticky="nsew",padx=8,pady=8)
-
-    def _generate_gbp_posts(self):
-        city,state = self._gbp_city.get().strip(), self._gbp_state.get().strip()
-        posts = generate_gbp_posts(city, state, cfg("website") or "https://tachy.in", count=10)
-        conn = sqlite3.connect(DB_PATH)
-        self._gbp_out.delete("1.0","end")
-        for p in posts:
-            conn.execute("INSERT INTO gbp_posts(city,state,post_type,post_content,utm_url) VALUES(?,?,?,?,?)", (city,state,p["post_type"],p["post_content"],p["utm_url"]))
-            self._gbp_out.insert("end", f"{p['post_type']}: {p['post_content']}\n\n")
-        conn.commit(); conn.close()
-
-    def _tab_whatsapp_outreach(self):
-        f = ttk.Frame(self.nb); self.nb.add(f, text="  📲  WhatsApp Outreach  ")
-        self._wa_city = tk.StringVar(value="Patna"); self._wa_state = tk.StringVar(value="Bihar"); self._wa_board = tk.StringVar(value="CBSE"); self._wa_school = tk.StringVar(value="{school_name}")
-        for i,var in enumerate([self._wa_city,self._wa_state,self._wa_board,self._wa_school]):
-            ttk.Entry(f, textvariable=var, width=24).grid(row=0,column=i,padx=6,pady=6)
-        ttk.Button(f,text="Generate WA Variants",command=self._generate_wa_outreach).grid(row=0,column=4,padx=8)
-        self._wa_out = scrolledtext.ScrolledText(f, height=14, bg="#040810", fg="#8be9a8", font=("Consolas",9)); self._wa_out.grid(row=1,column=0,columnspan=5,sticky="nsew",padx=8,pady=8)
-
-    def _generate_wa_outreach(self):
-        msgs = generate_wa_broadcasts(self._wa_city.get().strip(), self._wa_state.get().strip(), self._wa_board.get().strip(), self._wa_school.get().strip())
-        conn = sqlite3.connect(DB_PATH); self._wa_out.delete("1.0","end")
-        for m in msgs:
-            conn.execute("INSERT INTO wa_broadcasts(city,state,target_role,message_text,char_count) VALUES(?,?,?,?,?)", (self._wa_city.get().strip(), self._wa_state.get().strip(), m["target_role"], m["message_text"], m["char_count"]))
-            self._wa_out.insert("end", f"[{m['target_role']}] {m['message_text']}\n")
-        conn.commit(); conn.close()
-
-    def _tab_hindi_pages(self):
-        f = ttk.Frame(self.nb); self.nb.add(f, text="  🇮🇳  Hindi Pages  ")
-        self._hi_state = tk.StringVar(value="Bihar"); self._hi_cities = tk.StringVar(value="Patna,Gaya,Muzaffarpur")
-        ttk.Combobox(f, textvariable=self._hi_state, values=["Bihar","Uttar Pradesh","Jharkhand","Madhya Pradesh","Chhattisgarh","Rajasthan","Delhi","Uttarakhand"], state="readonly").grid(row=0,column=0,padx=8,pady=6)
-        ttk.Entry(f, textvariable=self._hi_cities, width=42).grid(row=0,column=1,padx=8,pady=6)
-        ttk.Button(f, text="Generate Hindi Pages", command=self._generate_hindi_pages).grid(row=0,column=2,padx=8)
-
-    def _generate_hindi_pages(self):
-        out = cfg("out_dir") or OUT_DIR; os.makedirs(out, exist_ok=True)
-        for city in [c.strip() for c in self._hi_cities.get().split(",") if c.strip()]:
-            page = generate_hindi_city_page(city, self._hi_state.get().strip(), cfg("website") or "https://tachy.in")
-            path = os.path.join(out, f"{page['slug']}.html")
-            with open(path, "w", encoding="utf-8") as fh:
-                fh.write(page["html"])
-        messagebox.showinfo("Hindi Pages", "Hindi pages generated.")
 
     # ══════════════════════════════════════════════════════════
     #  TAB 7 — SETTINGS
