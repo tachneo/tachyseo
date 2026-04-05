@@ -458,6 +458,7 @@ def run_publish_safety_validator(
     config: Dict[str, str],
     proof_mode: str,
     testimonials: list,
+    client_context: Dict[str, object] | None = None,
 ) -> PublishSafetyResult:
     working_html = html_doc
     issues: List[str] = []
@@ -506,6 +507,35 @@ def run_publish_safety_validator(
     schema_ok, schema_errors = validate_schema_semantics(working_html, proof_mode=proof_mode)
     schema_status = "valid" if schema_ok else "invalid"
     issues.extend(schema_errors)
+
+    # Client domain safety checks
+    if client_context:
+        school_specificity = int(client_context.get("school_specificity_score", 0) or 0)
+        if school_specificity < 55:
+            issues.append("school_specificity_low")
+        anchors = client_context.get("anchors", [])
+        tachy_links = int(client_context.get("tachy_link_count", 0) or 0)
+        if tachy_links > 2:
+            issues.append("client_tachy_link_overcount")
+            issues.append("backlink_intent_too_obvious")
+        seen = set()
+        for a in anchors:
+            clean = str(a).strip().lower()
+            if clean in seen:
+                issues.append("exact_match_anchor_overuse")
+            seen.add(clean)
+            ok, reason = validate_client_anchor(clean)
+            if not ok:
+                issues.append("backlink_intent_too_obvious")
+                issues.append(reason)
+        if "powered by tachy school erp" in working_html.lower() and "rel=" not in working_html.lower():
+            issues.append("powered_by_rel_missing")
+        cross_domain_similarity = float(client_context.get("cross_domain_similarity", 0) or 0)
+        if cross_domain_similarity > 0.75:
+            issues.append("cross_domain_similarity_high")
+        canonical_mode = str(client_context.get("canonical_mode", ""))
+        if canonical_mode == "canonical_to_tachy" and "tachy.in" not in working_html.lower():
+            issues.append("canonical_decision_inconsistent")
 
     publish_safety_status = "safe"
     if issues or schema_status == "invalid" or business_status != "safe":
@@ -571,3 +601,231 @@ def proof_mode_context(db_path: str, city: str, state: str, freshness_days: int 
         },
         "testimonials": testimonials,
     }
+
+
+def calculate_school_specificity_score(page_html: str, school_profile: Dict[str, object]) -> int:
+    score = 100
+    text = extract_visible_text(page_html)
+    school_name = str(school_profile.get("school_name", "")).strip().lower()
+    city = str(school_profile.get("city", "")).strip().lower()
+    modules = [str(m).lower() for m in school_profile.get("modules_used", [])]
+    go_live = str(school_profile.get("go_live_date", "")).strip()
+    h1 = re.search(r"<h1[^>]*>(.*?)</h1>", page_html, flags=re.I | re.S)
+    h1_text = h1.group(1).lower() if h1 else ""
+    if school_name and school_name not in h1_text:
+        score -= 20
+    if city and text.count(city) < 1:
+        score -= 10
+    if modules and not any(m.replace("_", " ") in text for m in modules):
+        score -= 10
+    if go_live and go_live not in text:
+        score -= 10
+    generic_markers = ["best school erp software india", "school erp software in india", "tachy school erp is india"]
+    if any(m in text for m in generic_markers):
+        score -= 30
+    return max(0, min(100, score))
+
+
+ALLOWED_CLIENT_ANCHORS = {
+    "tachy school erp",
+    "powered by tachy school erp",
+    "school erp platform by tachy",
+    "learn more about tachy school erp",
+    "our school erp platform",
+    "school management platform",
+}
+BLOCKED_CLIENT_ANCHORS = {
+    "best school erp software",
+    "school erp india",
+    "school management software",
+    "top school erp",
+}
+
+
+def validate_client_anchor(anchor_text: str) -> Tuple[bool, str]:
+    a = (anchor_text or "").strip().lower()
+    if a in BLOCKED_CLIENT_ANCHORS:
+        return False, "blocked_exact_match_commercial_anchor"
+    if a not in ALLOWED_CLIENT_ANCHORS:
+        return False, "anchor_not_in_allowlist"
+    return True, "ok"
+
+
+def compare_with_tachy_pages(client_html: str, tachy_pages_dir: str) -> float:
+    client_text = extract_visible_text(client_html)
+    max_sim = 0.0
+    if not tachy_pages_dir or not os.path.isdir(tachy_pages_dir):
+        return 0.0
+    for fn in os.listdir(tachy_pages_dir):
+        if not fn.endswith(".html"):
+            continue
+        try:
+            with open(os.path.join(tachy_pages_dir, fn), "r", encoding="utf-8") as fh:
+                max_sim = max(max_sim, similarity_score(client_text, extract_visible_text(fh.read())))
+        except Exception:
+            continue
+    return round(max_sim, 4)
+
+
+def compare_with_other_client_pages(client_html: str, db_path: str) -> float:
+    client_text = extract_visible_text(client_html)
+    conn = sqlite3.connect(db_path)
+    rows = conn.execute("SELECT visible_text FROM client_pages WHERE visible_text IS NOT NULL ORDER BY id DESC LIMIT 500").fetchall()
+    conn.close()
+    mx = 0.0
+    for (txt,) in rows:
+        mx = max(mx, similarity_score(client_text, txt or ""))
+    return round(mx, 4)
+
+
+def auto_select_output_mode(page_type: str, similarity_score_value: float, school_specificity_score: int, proof_status: str) -> str:
+    if page_type.startswith("tachy_"):
+        return page_type
+    if school_specificity_score < 50:
+        return "client_noindex_support"
+    if similarity_score_value > 0.75:
+        return "client_canonicalized"
+    if page_type == "case_study" and proof_status != "verified":
+        return "client_noindex_support"
+    if page_type == "case_study":
+        return "client_case_study"
+    if page_type == "erp_announcement":
+        return "client_announcement"
+    return "client_indexed"
+
+
+def _client_base_html(title: str, body: str, canonical: str, robots: str, schema_json: str, hreflang: str = "") -> str:
+    return f"""<!doctype html>
+<html lang=\"en-IN\"><head>
+<meta charset=\"utf-8\"/><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"/>
+<title>{title}</title>
+<meta name=\"description\" content=\"{title}\"/>
+<meta name=\"robots\" content=\"{robots}\"/>
+<link rel=\"canonical\" href=\"{canonical}\"/>{hreflang}
+<script type=\"application/ld+json\">{schema_json}</script>
+</head><body>{body}</body></html>"""
+
+
+def generate_client_page(page_type: str, school_profile: Dict[str, object], config: Dict[str, str], proof_status: str = "neutral") -> Dict[str, object]:
+    school = school_profile["school_name"]
+    city = school_profile["city"]
+    state = school_profile["state"]
+    domain = school_profile["school_domain"].rstrip("/")
+    slug = sanitize_slug(f"{school}-{page_type}")
+    canonical = f"https://{domain}/{slug}.html"
+    modules = ", ".join(school_profile.get("modules_used", [])) or "fees, attendance, report cards"
+    go_live = school_profile.get("go_live_date", "")
+    link_anchor = "TACHY School ERP"
+    _ok, _reason = validate_client_anchor(link_anchor)
+    tlink = f'<a href="https://tachy.in" rel="nofollow">{link_anchor}</a>'
+    title_map = {
+        "our_erp_page": f"{school} Uses TACHY School ERP",
+        "parent_help_center": f"Parent Help Center — {school}",
+        "fee_payment_guide": f"How to Pay School Fees Online — {school}",
+        "attendance_guide": f"How to Check Student Attendance — {school}",
+        "report_card_guide": f"How to Access Report Cards Online — {school}",
+        "erp_announcement": f"{school} Goes Digital with TACHY School ERP",
+        "digital_transformation_story": f"How {school} Digitized School Management",
+        "case_study": f"{school} ERP Case Study",
+        "school_faq": f"Frequently Asked Questions — {school} Digital Platform",
+        "app_download_guide": f"Download the {school} School App",
+    }
+    title = title_map.get(page_type, f"{school} Digital Platform")
+    body = f"<h1>{title}</h1><p>{school} in {city}, {state} uses a digital workflow for {modules}. Powered support: {tlink}</p>"
+    if go_live:
+        body += f"<p>Go-live date: {go_live}.</p>"
+    if page_type == "parent_help_center":
+        body += "<h2>Login Guide</h2><p>Use school-issued credentials to login.</p><h2>Fee Payments</h2><p>Pay online securely.</p>"
+    if page_type == "case_study" and proof_status != "verified":
+        body += "<p>Results vary by school size and deployment scope.</p>"
+    schema = json.dumps({"@context": "https://schema.org", "@type": "WebPage", "name": title, "url": canonical})
+    html = _client_base_html(title, body, canonical, "index,follow", schema)
+    specificity = calculate_school_specificity_score(html, school_profile)
+    decision_mode = auto_select_output_mode(page_type, 0.0, specificity, proof_status)
+    if decision_mode == "client_noindex_support":
+        html = html.replace("index,follow", "noindex,nofollow")
+    return {"slug": slug, "html": html, "school_specificity_score": specificity, "output_mode": decision_mode, "canonical": canonical}
+
+
+def generate_board_city_page(board: str, city: str, state: str, website: str) -> Dict[str, str]:
+    slug = sanitize_slug(f"{board}-school-erp-{city}")
+    title = f"{board} School ERP in {city}"
+    body = f"<h1>{title}</h1><h2>{board} grading workflows</h2><p>Board-specific report cards for {city}, {state} schools.</p>"
+    schema = json.dumps({"@context":"https://schema.org","@type":"FAQPage","mainEntity":[]})
+    html = _client_base_html(title, body, f"{website.rstrip('/')}/{slug}.html", "index,follow", schema)
+    return {"slug": slug, "html": html}
+
+
+def generate_locality_page(locality: str, city: str, state: str, website: str) -> Dict[str, str]:
+    slug = sanitize_slug(f"school-erp-{locality}-{city}")
+    title = f"School ERP {locality} {city}"
+    body = f"<h1>{title}</h1><p>Locality-focused service context for {locality}, {city}, {state}.</p>"
+    schema = json.dumps({"@context":"https://schema.org","@type":"WebPage","name":title})
+    html = _client_base_html(title, body, f"{website.rstrip('/')}/{slug}.html", "index,follow", schema)
+    return {"slug": slug, "html": html}
+
+
+def generate_module_city_page(module: str, city: str, state: str, website: str) -> Dict[str, str]:
+    slug = sanitize_slug(f"school-{module}-software-{city}")
+    title = f"School {module.title()} Software in {city}"
+    body = f"<h1>{title}</h1><p>{module.title()} workflows for schools in {city}, {state}.</p>"
+    schema = json.dumps({"@context":"https://schema.org","@type":"WebPage","name":title})
+    html = _client_base_html(title, body, f"{website.rstrip('/')}/{slug}.html", "index,follow", schema)
+    return {"slug": slug, "html": html}
+
+
+def generate_voice_faq_page(city: str, state: str, website: str) -> Dict[str, str]:
+    slug = sanitize_slug(f"faq-school-erp-{city}")
+    title = f"FAQ School ERP {city}"
+    body = f"<h1>{title}</h1><h2>What is school ERP software in {city}?</h2><p>It helps manage fees, attendance, and communication.</p>"
+    schema = json.dumps({"@context":"https://schema.org","@type":"FAQPage","mainEntity":[{"@type":"Question","name":f"What is school ERP software in {city}?","acceptedAnswer":{"@type":"Answer","text":"A digital school operations platform."}}]})
+    html = _client_base_html(title, body, f"{website.rstrip('/')}/{slug}.html", "index,follow", schema)
+    return {"slug": slug, "html": html}
+
+
+def generate_comparison_page(competitor: str, website: str) -> Dict[str, str]:
+    slug = sanitize_slug(f"tachy-vs-{competitor}")
+    title = f"TACHY vs {competitor.title()}"
+    body = f"<h1>{title}</h1><table><tr><th>Criteria</th><th>TACHY</th><th>{competitor.title()}</th></tr><tr><td>Implementation</td><td>Guided rollout</td><td>Varies by plan</td></tr></table>"
+    schema = json.dumps({"@context":"https://schema.org","@type":"Article","headline":title})
+    html = _client_base_html(title, body, f"{website.rstrip('/')}/{slug}.html", "index,follow", schema)
+    return {"slug": slug, "html": html}
+
+
+def generate_hindi_city_page(city: str, state: str, website: str) -> Dict[str, str]:
+    slug = sanitize_slug(f"{city}-school-erp-hindi")
+    title = f"TACHY स्कूल ERP सॉफ्टवेयर — {city}, {state}"
+    body = f"<h1>{title}</h1><p>{city} के स्कूलों के लिए फीस, उपस्थिति और रिपोर्ट कार्ड प्रबंधन का डिजिटल समाधान।</p>"
+    base = website.rstrip("/")
+    hreflang = f'<link rel="alternate" hreflang="en-IN" href="{base}/{sanitize_slug(city)}-school-erp.html"/><link rel="alternate" hreflang="hi" href="{base}/{slug}.html"/>'
+    schema = json.dumps({"@context":"https://schema.org","@type":"WebPage","inLanguage":"hi-IN","name":title}, ensure_ascii=False)
+    html = _client_base_html(title, body, f"{website.rstrip('/')}/{slug}.html", "index,follow", schema, hreflang=hreflang)
+    return {"slug": slug, "html": html}
+
+
+def generate_gbp_posts(city: str, state: str, website: str, count: int = 10) -> List[Dict[str, str]]:
+    base = f"{website.rstrip('/')}/school-erp-{sanitize_slug(city)}.html?utm_source=gbp&utm_medium=post&utm_campaign={sanitize_slug(city)}"
+    templates = [
+        "Schools in {city} are simplifying operations with digital ERP workflows. Explore demo options: {url}",
+        "Feature spotlight for {city} schools: fee reminders, attendance visibility, and parent communication. {url}",
+        "FAQ for {city} parents: how digital fee receipts and attendance updates work. {url}",
+        "Book a guided ERP demo for {city}, {state} schools. {url}",
+        "State-ready workflows for {state} boards and school admins in {city}. {url}",
+    ]
+    posts = []
+    for i in range(count):
+        txt = templates[i % len(templates)].format(city=city, state=state, url=base)
+        posts.append({"post_type": f"type_{i%5+1}", "post_content": txt[:1500], "utm_url": base})
+    return posts
+
+
+def generate_wa_broadcasts(city: str, state: str, board: str, school_name: str = "{school_name}") -> List[Dict[str, str]]:
+    variants = [
+        f"Namaste Principal, {city} schools are adopting digital ERP for fees/attendance. Want a short demo for {school_name}?",
+        f"Following up for {school_name}: we can share a {board}-ready ERP walkthrough tailored for {city}.",
+        f"Demo confirmed: we’ll cover admissions, fees, attendance, and report cards for {school_name} in {state}.",
+        f"For accountants at {school_name}: fee ledgers, reminders, and receipts can be automated safely.",
+        f"For school management: ERP helps visibility across academics and operations, tailored for {city} schools.",
+    ]
+    roles = ["Principal", "Principal", "Management", "Accountant", "Trust"]
+    return [{"target_role": roles[i], "message_text": v[:300], "char_count": len(v[:300])} for i, v in enumerate(variants)]
